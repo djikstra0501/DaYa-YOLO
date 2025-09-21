@@ -712,3 +712,73 @@ class Index(nn.Module):
             (torch.Tensor): Selected tensor.
         """
         return x[self.index]
+
+class ECA(nn.Module):
+    """Efficient Channel Attention (ECA) Block.
+
+    This module implements the ECA mechanism from the paper:
+    "ECA-Net: Efficient Channel Attention for Deep Convolutional Neural Networks"
+    (Wang et al., CVPR 2020).
+
+    The block adaptively determines the size of the 1D convolution kernel
+    based on the number of channels in the input feature map, which models
+    local cross-channel interactions efficiently without dimensionality
+    reduction.
+
+    Args:
+        gamma (int, optional): Hyperparameter for controlling kernel size scaling.
+            Default is 2.
+        b (int, optional): Bias term in the kernel size formula.
+            Default is 1.
+
+    Shape:
+        - Input: Tensor of shape (N, C, H, W)
+        - Output: Tensor of shape (N, C, H, W), same as input
+
+    Example:
+        >>> eca = ECA(gamma=2, b=1)
+        >>> x = torch.randn(8, 64, 32, 32)  # [N, C, H, W]
+        >>> out = eca(x)
+        >>> out.shape
+        torch.Size([8, 64, 32, 32])
+    """
+
+    def __init__(self, gamma=2, b=1):
+        super(ECA, self).__init__()
+        self.gamma = gamma
+        self.b = b
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.sigmoid = nn.Sigmoid()
+        # Conv1d is built dynamically in forward() since kernel size depends on C
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for ECA block.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (N, C, H, W).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (N, C, H, W) with
+            channel-wise attention applied.
+        """
+        N, C, H, W = x.size()
+
+        # Dynamic kernel size calculation
+        t = int(abs((math.log(C, 2) + self.b) / self.gamma))
+        k = t if t % 2 else t + 1
+
+        # Build 1D convolution dynamically
+        conv = nn.Conv1d(1, 1, kernel_size=k, padding=k // 2, bias=False).to(x.device)
+
+        # Global average pooling → [N, C, 1, 1]
+        y = self.avg_pool(x)
+
+        # Apply 1D conv along channel dimension
+        y = conv(y.squeeze(-1).transpose(-1, -2))
+        y = y.transpose(-1, -2).unsqueeze(-1)  # back to [N, C, 1, 1]
+
+        # Attention weights
+        y = self.sigmoid(y)
+
+        # Reweight input
+        return x * y.expand_as(x)
