@@ -1,6 +1,6 @@
-train: ../train/images
-val: ../valid/images
-test: ../test/images
+train: ../general/train/images
+val: ../general/valid/images
+test: ../general/test/images
 
 nc: 3
 names: ['Leaf Blight', 'Leaf Streak', 'Panicle Blight']
