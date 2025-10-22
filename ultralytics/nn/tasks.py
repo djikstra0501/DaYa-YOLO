@@ -93,6 +93,10 @@ from ultralytics.utils.torch_utils import (
     time_sync,
 )
 
+from ultralytics.nn.modules.conv import ECA, SpatialAttention
+globals()['ECA'] = ECA
+globals()['SpatialAttention'] = SpatialAttention
+
 
 class BaseModel(torch.nn.Module):
     """
