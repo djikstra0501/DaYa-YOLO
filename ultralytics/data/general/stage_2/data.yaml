@@ -1,0 +1,13 @@
+train: ../general/stage_2/train/images
+val: ../general/stage_2/valid/images
+test: ../general/stage_2/test/images
+
+nc: 3
+names: ['Leaf Blight', 'Leaf Streak', 'Panicle Blight']
+
+roboflow:
+  workspace: lynk
+  project: agricultural-pest-diseases-rop7j
+  version: 11
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/lynk/agricultural-pest-diseases-rop7j/dataset/11

@@ -1,0 +1,13 @@
+train: ../general/stage_1/train/images
+val: ../general/stage_1/valid/images
+test: ../general/stage_1/test/images
+
+nc: 13
+names: ['Bacterial leaf blight', 'Brown spot', 'Leaf blast', 'Leaf scald', 'Narrow brown', 'brown plant hopper', 'green leaf hopper', 'healthy', 'insects', 'leaf folder', 'rice leaf roller', 'ricebug', 'stem borer']
+
+roboflow:
+  workspace: daya-ut4cg
+  project: paddy-disease-pest-merge-ywx8l
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/daya-ut4cg/paddy-disease-pest-merge-ywx8l/dataset/1
