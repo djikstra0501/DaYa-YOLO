@@ -1,6 +1,6 @@
-train: ../train/images
-val: ../valid/images
-test: ../test/images
+train: /kaggle/working/ultralytics/data/general/stage_1/train/images
+val: /kaggle/working/ultralytics/data/general/stage_1/valid/images
+test: /kaggle/working/ultralytics/data/general/stage_1/test/images
 
 nc: 9
 names: ['Hama Putih Palsu', 'Hawar Daun Bakteri', 'Keong Mas', 'Lalat', 'Penggerek Batang', 'Penggulung Daun', 'Walang Sangit', 'Wereng', 'brown spot']
