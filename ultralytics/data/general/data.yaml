@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 9
+names: ['Hama Putih Palsu', 'Hawar Daun Bakteri', 'Keong Mas', 'Lalat', 'Penggerek Batang', 'Penggulung Daun', 'Walang Sangit', 'Wereng', 'brown spot']
+
+roboflow:
+  workspace: ta-8joab
+  project: non-vegetatif
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ta-8joab/non-vegetatif/dataset/1
