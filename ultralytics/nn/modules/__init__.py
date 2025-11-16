@@ -59,6 +59,10 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    CIBPGI,
+    CCBFuse,
+    CCBLinear,
+    CADown,
 )
 from .conv import (
     CBAM,
@@ -89,6 +93,7 @@ from .head import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
+    DualDDetect,
 )
 from .transformer import (
     AIFI,
@@ -181,4 +186,9 @@ __all__ = (
     "Index",
     "A2C2f",
     "ECA",
+    "CIBPGI",
+    "CCBLinear",
+    "CCBFuse",
+    "CADown",
+    "DualDDetect",
 )

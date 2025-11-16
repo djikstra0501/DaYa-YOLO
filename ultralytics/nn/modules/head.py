@@ -19,8 +19,9 @@ from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Residu
 from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
+from typing import List, Union, Dict, Tuple
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment"
+__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "YOLOEDetect", "YOLOESegment", "DualDDetect"
 
 
 class Detect(nn.Module):
@@ -1228,3 +1229,175 @@ class v10Detect(Detect):
     def fuse(self):
         """Remove the one2many head for inference optimization."""
         self.cv2 = self.cv3 = nn.ModuleList([nn.Identity()] * self.nl)
+        
+class DualDDetect(nn.Module):
+    dynamic = False
+    export = False
+    format = None
+    end2end = False
+    max_det = 300
+    shape = None
+    anchors = torch.empty(0)
+    strides = torch.empty(0)
+    legacy = False
+    xyxy = False
+
+    def __init__(self, nc=80, ch=()):
+        print("[DEBUG] DualDDetect got ch =", ch)
+        super().__init__()
+        self.nc = nc
+
+        assert len(ch) % 2 == 0, "DualDDetect: ch must contain main+aux feature maps."
+        self.nl = len(ch) // 2
+        self.reg_max = 16
+        self.no = nc + self.reg_max * 4
+        self.stride = torch.zeros(self.nl)
+
+        # split channels
+        ch_main = ch[: self.nl]
+        ch_aux = ch[self.nl :]
+        print("[DEBUG] ch_main =", ch_main)
+        print("[DEBUG] ch_aux =", ch_aux)
+
+        # main branch convs (YOLOv11-style)
+        c2_m = max((16, ch_main[0] // 4, self.reg_max * 4))
+        c3_m = max(ch_main[0], min(nc, 100))
+        self.cv2 = nn.ModuleList(
+            [
+                nn.Sequential(Conv(c_in, c2_m, 3), Conv(c2_m, c2_m, 3), nn.Conv2d(c2_m, 4 * self.reg_max, 1))
+                for c_in in ch_main
+            ]
+        )
+        self.cv3 = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Sequential(DWConv(c_in, c_in, 3), Conv(c_in, c3_m, 1)),
+                    nn.Sequential(DWConv(c3_m, c3_m, 3), Conv(c3_m, c3_m, 1)),
+                    nn.Conv2d(c3_m, nc, 1),
+                )
+                for c_in in ch_main
+            ]
+        )
+
+        # aux branch convs (YOLOv9-style)
+        c2_a = max((16, ch_aux[0] // 4, self.reg_max * 4))
+        c3_a = max(ch_aux[0], min(nc, 100))
+        self.cv4 = nn.ModuleList(
+            [
+                nn.Sequential(Conv(c_in, c2_a, 3), Conv(c2_a, c2_a, 3), nn.Conv2d(c2_a, 4 * self.reg_max, 1))
+                for c_in in ch_aux
+            ]
+        )
+        self.cv5 = nn.ModuleList(
+            [
+                nn.Sequential(Conv(c_in, c3_a, 3), Conv(c3_a, c3_a, 3), nn.Conv2d(c3_a, nc, 1))
+                for c_in in ch_aux
+            ]
+        )
+
+        # DFL per-branch (keeps symmetry)
+        self.dfl_main = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+        self.dfl_aux = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+
+        if self.end2end:
+            self.one2one_cv2 = copy.deepcopy(self.cv2)
+            self.one2one_cv3 = copy.deepcopy(self.cv3)
+            self.one2one_cv4 = copy.deepcopy(self.cv4)
+            self.one2one_cv5 = copy.deepcopy(self.cv5)
+
+    def forward(self, x: List[torch.Tensor]):
+        if self.end2end:
+            return self.forward_end2end(x)
+
+        # split inputs
+        main_feats = x[: self.nl]
+        aux_feats = x[self.nl :]
+
+        # produce predictions per-level
+        d1 = [torch.cat((self.cv2[i](main_feats[i]), self.cv3[i](main_feats[i])), 1) for i in range(self.nl)]
+        d2 = [torch.cat((self.cv4[i](aux_feats[i]), self.cv5[i](aux_feats[i])), 1) for i in range(self.nl)]
+
+        # TRAINING: return same structure as Detect -> list of per-layer tensors
+        # Combine main and aux lists into a single list: [main0, main1, main2, aux0, aux1, aux2]
+        if self.training:
+            return d1 + d2
+
+        # INFERENCE: use inference helper
+        y = self._inference(d1, d2)
+        return y if self.export else (y, {"main": d1, "aux": d2})
+
+    def forward_end2end(self, x: List[torch.Tensor]):
+        xd = [t.detach() for t in x]
+        main_d = xd[: self.nl]
+        aux_d = xd[self.nl :]
+
+        one2one_main = [
+            torch.cat((self.one2one_cv2[i](main_d[i]), self.one2one_cv3[i](main_d[i])), 1) for i in range(self.nl)
+        ]
+        one2one_aux = [
+            torch.cat((self.one2one_cv4[i](aux_d[i]), self.one2one_cv5[i](aux_d[i])), 1) for i in range(self.nl)
+        ]
+
+        # one2many branches (from x)
+        main_om = [torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1) for i in range(self.nl)]
+        aux_om = [torch.cat((self.cv4[i](x[self.nl + i]), self.cv5[i](x[self.nl + i])), 1) for i in range(self.nl)]
+
+        if self.training:
+            # match Detect.forward_end2end expected format
+            return {"one2many": main_om + aux_om, "one2one": one2one_main + one2one_aux}
+
+        # inference: use one2one branches for decoding
+        y = self._inference(one2one_main, one2one_aux)
+        y = self.postprocess(y.permute(0, 2, 1), self.max_det, self.nc)
+        return y if self.export else (y, {"one2many": main_om + aux_om, "one2one": one2one_main + one2one_aux})
+
+    def _inference(self, d1: List[torch.Tensor], d2: List[torch.Tensor]) -> torch.Tensor:
+        # d1 and d2 are lists of per-level pred tensors
+
+        shape = d1[0].shape  # BCHW
+        # concat all preds across levels in channel axis then flatten per anchor
+        x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1 + d2], 2)
+
+        # anchor generation: use main branch feature maps (d1)
+        if self.dynamic or self.shape != shape:
+            self.anchors, self.strides = (t.transpose(0, 1) for t in make_anchors(d1, self.stride, 0.5))
+            self.shape = shape
+
+        box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
+
+        # decode boxes
+        dbox = self.decode_bboxes(self.dfl_main(box), self.anchors.unsqueeze(0)) * self.strides
+
+        return torch.cat((dbox, cls.sigmoid()), 1)
+
+    def bias_init(self):
+        # identical to Detect bias init but for both sets
+        for a, b, s in zip(self.cv2, self.cv3, self.stride):
+            a[-1].bias.data[:] = 1.0
+            b[-1].bias.data[: self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
+
+        for a, b, s in zip(self.cv4, self.cv5, self.stride):
+            a[-1].bias.data[:] = 1.0
+            b[-1].bias.data[: self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
+
+        if self.end2end:
+            for a, b, s in zip(self.one2one_cv2, self.one2one_cv3, self.stride):
+                a[-1].bias.data[:] = 1.0
+                b[-1].bias.data[: self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
+            for a, b, s in zip(self.one2one_cv4, self.one2one_cv5, self.stride):
+                a[-1].bias.data[:] = 1.0
+                b[-1].bias.data[: self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
+
+    def decode_bboxes(self, bboxes, anchors, xywh=True):
+        return dist2bbox(bboxes, anchors, xywh=xywh and not self.end2end and not self.xyxy, dim=1)
+
+    @staticmethod
+    def postprocess(preds: torch.Tensor, max_det: int, nc: int = 80) -> torch.Tensor:
+        batch_size, anchors, _ = preds.shape
+        boxes, scores = preds.split([4, nc], dim=-1)
+        index = scores.amax(dim=-1).topk(min(max_det, anchors))[1].unsqueeze(-1)
+        boxes = boxes.gather(dim=1, index=index.repeat(1, 1, 4))
+        scores = scores.gather(dim=1, index=index.repeat(1, 1, nc))
+        scores, index = scores.flatten(1).topk(min(max_det, anchors))
+        i = torch.arange(batch_size)[..., None]
+        return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)

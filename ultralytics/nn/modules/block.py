@@ -52,6 +52,10 @@ __all__ = (
     "PSA",
     "SCDown",
     "TorchVision",
+    "CIBPGI",
+    "CCBLinear",
+    "CCBFuse",
+    "CADown",
 )
 
 
@@ -2029,4 +2033,189 @@ class SAVPE(nn.Module):
         aggregated = score.transpose(-2, -3) @ x.reshape(B, self.c, C // self.c, -1).transpose(-1, -2)
 
         return F.normalize(aggregated.transpose(-2, -3).reshape(B, Q, -1), dim=-1, p=2)
+
+class CIBPGI(nn.Module):
+    """
+    CIB with a lightweight PGI global branch.
+
+    Behavior:
+      - keeps original CIB local/context pipeline
+      - adds a third global-geometry branch: adaptive pool -> 1x1 conv -> upsample -> fuse
+      - final fusion: local/context + global (and optional residual)
+    """
+
+    def __init__(self, c1: int, c2: int, shortcut: bool = True, e: float = 0.5, lk: bool = False, use_residual: bool = True):
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        # original CIB pipeline (kept)
+        self.cv1 = nn.Sequential(
+            Conv(c1, c1, 3, g=c1),                       # depthwise spatial conv
+            Conv(c1, 2 * c_, 1),                         # expand
+            RepVGGDW(2 * c_) if lk else Conv(2 * c_, 2 * c_, 3, g=2 * c_),  # structural transform
+            Conv(2 * c_, c2, 1),                         # project
+            Conv(c2, c2, 3, g=c2),                       # refine
+        )
+        self.add = shortcut and c1 == c2
+        # PGI global branch: pooled geometry -> project -> broadcast
+        # keep it small: squeeze to c_ then expand to c2
+        self.pg_pool = nn.AdaptiveAvgPool2d(1)
+        self.pg_proj = nn.Sequential(
+            Conv(c1, c_, 1, 1),      # reduce channels
+            nn.ReLU(inplace=True),
+            Conv(c_, c2, 1, 1, act=False)  # project to output channels
+        )
+        # optional small gating (learnable)
+        self.pg_gate = nn.Parameter(torch.tensor(0.0))  # scalar to scale PG contribution; initialized 0 -> warm start
+        self.use_residual = use_residual
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # original CIB transform
+        t = self.cv1(x)
+
+        # PG branch
+        pg = self.pg_pool(x)                # B x C x 1 x 1
+        pg = self.pg_proj(pg)               # B x c2 x 1 x 1
+        # broadcast to spatial size of t
+        # target_hw = (t.shape[2], t.shape[3])
+        pg = F.interpolate(pg, size=t.shape[2:], mode="nearest")
+        # scale pg by gate (learnable scalar) for training stability
+        pg = pg * torch.sigmoid(self.pg_gate)
+
+        out = t + pg                         # fuse conv-refined + global geometry
+        if self.add and self.use_residual:
+            return x + out
+        else:
+            return out
+
+class CCBLinear(nn.Module):
+    """
+    Conv that splits its output into multiple channel groups.
+    Supports being initialized either as:
+      CCBLinear(c1, c2s, k=1, s=1, p=None, g=1)
+    or (parser/YAML style):
+      CCBLinear([c2, c2, ...])
+    If c1 isn't known at init time we lazily build the internal Conv on first forward.
+    """
+
+    def __init__(self, *args, k=1, s=1, p=None, g=1):
+        super().__init__()
+        # normalize args:
+        # possible forms:
+        #  (c1:int, c2s:list[int], k=..., ...)
+        #  (c2s:list[int],)
+        self.k = k
+        self.s = s
+        self.p = p
+        self.g = g
+        self.conv = None  # will be created when c1 is known
+        self._built = False
+
+        if len(args) == 0:
+            raise TypeError("CCBLinear requires at least c2s or (c1, c2s)")
+        if isinstance(args[0], (list, tuple)):
+            # called as CCBLinear([c2, c2, ...])  (no c1)
+            self.c1 = None
+            self.c2s = list(args[0])
+        else:
+            # called as CCBLinear(c1, c2s)
+            self.c1 = int(args[0])
+            if len(args) < 2:
+                raise TypeError("CCBLinear missing c2s argument")
+            self.c2s = list(args[1])
+
+        # output channel count (sum of groups) -- used by parser expectations
+        self.c2 = int(sum(self.c2s))
+
+        # if c1 known at init, build conv now
+        if self.c1 is not None:
+            self._build_conv(self.c1)
+
+    def _build_conv(self, c1: int):
+        """Create internal conv with known input channels."""
+        if self._built:
+            return
+        self.conv = nn.Conv2d(
+            int(c1),
+            self.c2,
+            self.k,
+            self.s,
+            autopad(self.k, self.p),
+            groups=self.g,
+            bias=True,
+        )
+        self._built = True
+
+    def forward(self, x: torch.Tensor):
+        # lazy build if needed
+        if not self._built:
+            in_c = x.shape[1]
+            self._build_conv(in_c)
+
+        y = self.conv(x)
+        # returns a tuple/list of tensors split by channel groups
+        return y.split(self.c2s, dim=1)
+
+
+class CCBFuse(nn.Module):
+    """
+    Fuse selected channel groups across provided feature tensors.
+    Accepts either idx as list[int] or as nested lists from YAML.
+    """
+
+    def __init__(self, idx):
+        super().__init__()
+        # allow nested lists like [[0,0,0]] from YAML; flatten if necessary
+        if isinstance(idx, (list, tuple)) and len(idx) == 1 and isinstance(idx[0], (list, tuple)):
+            idx = idx[0]
+        self.idx = torch.tensor(idx, dtype=torch.long)
+        self.c2 = None  # placeholder
     
+    @property
+    def out_channels(self):
+        """
+        Return the expected number of output channels for the parser.
+        Sum of selected channels from input tensors.
+        This is used by parse_model to compute c2.
+        """
+        if self.c2 is not None:
+            return self.c2
+        # fallback default if unknown
+        return len(self.idx)
+
+    def forward(self, xs: list[torch.Tensor]) -> torch.Tensor:
+        # xs: list of tensors, last one is the target spatial size
+        target_hw = xs[-1].shape[2:]
+        # pick channels from each tensor using index and resample to target
+        resampled = []
+        for x in xs[:-1]:
+            # if x has fewer channels than max idx, guard by modulo (optional) or raise
+            if self.idx.max().item() >= x.shape[1]:
+                raise ValueError(f"CCBFuse index {self.idx.max().item()} out of range for tensor with {x.shape[1]} channels")
+            picked = x.index_select(1, self.idx)
+            resampled.append(F.interpolate(picked, size=target_hw, mode="nearest"))
+        # include final tensor as-is (already matching target_hw)
+        all_parts = resampled + [xs[-1]]
+        return torch.sum(torch.stack(all_parts), dim=0)
+
+
+class CADown(nn.Module):
+    """Alternate downsample module (same semantics as your CADown)."""
+
+    def __init__(self, c1, c2=None):
+        super().__init__()
+        # defensively accept c1 possibly being a list (flatten)
+        if isinstance(c1, (list, tuple)):
+            c1 = int(sum(c1))
+        self.c1 = int(c1)
+        self.c2 = int(c2) if c2 is not None else self.c1   # default to c1
+        self.c = self.c2 // 2
+        self.cv1 = Conv(self.c1 // 2, self.c, 3, 2, 1)
+        self.cv2 = Conv(self.c1 // 2, self.c, 1, 1, 0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.avg_pool2d(x, 2, 1)
+        x1, x2 = x.chunk(2, 1)
+        x1 = self.cv1(x1)
+        x2 = F.max_pool2d(x2, 3, 2, 1)
+        x2 = self.cv2(x2)
+        return torch.cat((x1, x2), 1)

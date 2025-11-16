@@ -68,6 +68,13 @@ from ultralytics.nn.modules import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
+    ECA,
+    SpatialAttention,
+    CIBPGI,
+    CCBFuse,
+    CCBLinear,
+    CADown,
+    DualDDetect,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -93,9 +100,16 @@ from ultralytics.utils.torch_utils import (
     time_sync,
 )
 
-from ultralytics.nn.modules.conv import ECA, SpatialAttention
+# from ultralytics.nn.modules.conv import ECA, SpatialAttention
+# from ultralytics.nn.modules.block import CIBPGI
+# Custom Block
 globals()['ECA'] = ECA
 globals()['SpatialAttention'] = SpatialAttention
+globals()['CIBPGI'] = CIBPGI
+globals()['CCBLinear'] = CCBLinear
+globals()['CCBFuse'] = CCBFuse
+globals()['CADown'] = CADown
+globals()['DualDDetect'] = DualDDetect
 
 
 class BaseModel(torch.nn.Module):
@@ -1540,6 +1554,17 @@ def parse_model(d, ch, verbose=True):
         save (list): Sorted list of output layers.
     """
     import ast
+    
+    # helper utilities
+    def _unwrap_single_nested_lists(arg):
+        """
+        If arg is a list/tuple whose single element is itself a list/tuple,
+        unwrap one level: [[a,b,c]] -> [a,b,c].
+        Applied only one level deep (that's the common YAML artifact we see).
+        """
+        if isinstance(arg, (list, tuple)) and len(arg) == 1 and isinstance(arg[0], (list, tuple)):
+            return list(arg[0])
+        return arg
 
     # Args
     legacy = True  # backward compatibility for v3/v5/v8/v9 models
@@ -1619,6 +1644,14 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
         }
     )
+    
+    # flattening utility used in a couple places
+    def _flatten(lst):
+        for item in lst:
+            if isinstance(item, (list, tuple)):
+                yield from _flatten(item)
+            else:
+                yield item
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
         m = (
             getattr(torch.nn, m[3:])
@@ -1684,13 +1717,35 @@ def parse_model(d, ch, verbose=True):
             args = [c1, c2, *args[1:]]
         elif m is CBFuse:
             c2 = ch[f[-1]]
+        elif m is CCBFuse:
+            # args[0] contains idx list from YAML 
+            idx = args[0] 
+            # recursively flatten nested lists/tuples 
+            def flatten(lst): 
+                for item in lst: 
+                    if isinstance(item, (list, tuple)): 
+                        yield from flatten(item) 
+                    else: 
+                        yield item 
+            idx = list(flatten(idx)) # fully flattened list of indices 
+            idx = [int(i) for i in idx] # sum input channels from idx 
+            c2 = sum([ch[i] for i in idx])
+            
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]
             args = [*args[1:]]
         else:
-            c2 = ch[f]
+            if isinstance(f, (list, tuple)):
+                try:
+                    c2 = int(sum(ch[int(x)] for x in f))
+                except Exception as e:
+                    # helpful debug if indices are out of range or mis-typed
+                    raise RuntimeError(f"Failed to compute c2 for layer {i} from list {f}; ch={ch}") from e
+            else:
+                c2 = int(ch[int(f)])
 
+        print(f"[DEBUG] Building layer: {m} with args={args}")
         m_ = torch.nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         m_.np = sum(x.numel() for x in m_.parameters())  # number params
