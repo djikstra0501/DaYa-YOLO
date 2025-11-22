@@ -2199,7 +2199,7 @@ class CCBFuse(nn.Module):
 
 
 class CADown(nn.Module):
-    """Alternate downsample module (same semantics as your CADown)."""
+    """Alternate downsample module."""
 
     def __init__(self, c1, c2=None):
         super().__init__()
