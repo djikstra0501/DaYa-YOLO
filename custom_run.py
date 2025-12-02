@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model = YOLO('ultralytics/cfg/models/11/yolov11-PGI.yaml')
+model = YOLO('ultralytics/cfg/models/v8/yolov8n-MCBAM.yaml')
 
 result = model.info(verbose=True)
 

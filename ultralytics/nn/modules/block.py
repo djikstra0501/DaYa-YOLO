@@ -56,6 +56,7 @@ __all__ = (
     "CCBLinear",
     "CCBFuse",
     "CADown",
+    "C2fG",
 )
 
 
@@ -456,7 +457,7 @@ class GhostBottleneck(nn.Module):
             s (int): Stride.
         """
         super().__init__()
-        c_ = c2 // 2
+        c_ = max(1, c2 // 2)
         self.conv = nn.Sequential(
             GhostConv(c1, c_, 1, 1),  # pw
             DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
@@ -2219,3 +2220,44 @@ class CADown(nn.Module):
         x2 = F.max_pool2d(x2, 3, 2, 1)
         x2 = self.cv2(x2)
         return torch.cat((x1, x2), 1)
+    
+class C2fG(nn.Module):
+    """C2f block using Ghost Bottleneck instead of standard Bottleneck.
+    
+    References: 
+        - "A Lightweight Rice Pest Detection Algorithm Using Improved Attention Mechanism and YOLOv8" 
+            (Yin et al., MDPI 2024) 
+            https://www.mdpi.com/2077-0472/14/7/1052    
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False, g: int = 1, e: float = 0.5):
+        """
+        Initialize C2fG with Ghost Bottleneck blocks.
+        
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            n (int): Number of Ghost Bottleneck blocks.
+            shortcut (bool): Whether to use shortcut connections (not used in GhostBottleneck).
+            g (int): Groups for convolutions (not used in GhostBottleneck).
+            e (float): Expansion ratio.
+        """
+        super().__init__()
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        # Use GhostBottleneck instead of regular Bottleneck
+        self.m = nn.ModuleList(GhostBottleneck(self.c, self.c, k=3, s=1) for _ in range(n))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through C2fG layer."""
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+    
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass using split() instead of chunk()."""
+        y = self.cv1(x).split((self.c, self.c), 1)
+        y = [y[0], y[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))

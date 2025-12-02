@@ -63,6 +63,7 @@ from .block import (
     CCBFuse,
     CCBLinear,
     CADown,
+    C2fG,
 )
 from .conv import (
     CBAM,
@@ -80,6 +81,8 @@ from .conv import (
     RepConv,
     SpatialAttention,
     ECA,
+    MCBAMChannelAttention,
+    MCBAM,
 )
 from .head import (
     OBB,
@@ -191,4 +194,7 @@ __all__ = (
     "CCBFuse",
     "CADown",
     "DualDDetect",
+    "MCBAMChannelAttention",
+    "MCBAM",
+    "C2fG",
 )

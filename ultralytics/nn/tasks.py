@@ -75,6 +75,9 @@ from ultralytics.nn.modules import (
     CCBLinear,
     CADown,
     DualDDetect,
+    MCBAMChannelAttention,
+    MCBAM,
+    C2fG,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -110,6 +113,9 @@ globals()['CCBLinear'] = CCBLinear
 globals()['CCBFuse'] = CCBFuse
 globals()['CADown'] = CADown
 globals()['DualDDetect'] = DualDDetect
+globals()['MCBAMChannelAttention'] = MCBAMChannelAttention
+globals()['MCBAM'] = MCBAM
+globals()['C2fG'] = C2fG
 
 
 class BaseModel(torch.nn.Module):
@@ -1623,6 +1629,8 @@ def parse_model(d, ch, verbose=True):
             SCDown,
             C2fCIB,
             A2C2f,
+            MCBAM,
+            C2fG,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1642,6 +1650,7 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             C2PSA,
             A2C2f,
+            C2fG,
         }
     )
     

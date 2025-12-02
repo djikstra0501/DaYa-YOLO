@@ -25,6 +25,8 @@ __all__ = (
     "RepConv",
     "Index",
     "ECA",
+    "MCBAMChannelAttention",
+    "MCBAM",
 )
 
 
@@ -356,7 +358,7 @@ class GhostConv(nn.Module):
             act (bool | nn.Module): Activation function.
         """
         super().__init__()
-        c_ = c2 // 2  # hidden channels
+        c_ = max(1, c2 // 2)  # hidden channels
         self.cv1 = Conv(c1, c_, k, s, None, g, act=act)
         self.cv2 = Conv(c_, c_, 5, 1, None, c_, act=act)
 
@@ -783,3 +785,108 @@ class ECA(nn.Module):
 
         # Reweight input
         return x * y.expand_as(x)
+
+class MCBAMChannelAttention(nn.Module):
+    """Multi-branch Channel Attention module (M-CBAM).
+
+    Extends CBAM channel attention by adding a third branch formed from the
+    sum of the average-pooled and max-pooled descriptors before applying
+    the shared MLP. The outputs of all three branches are aggregated to
+    generate richer channel attention weights.
+
+    Args:
+        channels (int): Number of input channels.
+        reduction (int, optional): Reduction ratio for the MLP hidden layer.
+            Defaults to 16.
+
+    Attributes:
+        mlp (nn.Sequential): Shared MLP with two 1×1 Conv layers and ReLU.
+        avg_pool (nn.AdaptiveAvgPool2d): Global average pooling.
+        max_pool (nn.AdaptiveMaxPool2d): Global max pooling.
+        sigmoid (nn.Sigmoid): Activation function for attention weights.
+    
+    References: 
+        - "A Lightweight Rice Pest Detection Algorithm Using Improved Attention Mechanism and YOLOv8" 
+            (Yin et al., MDPI 2024) 
+            https://www.mdpi.com/2077-0472/14/7/1052
+    """
+
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        hidden = channels // reduction
+
+        # Shared MLP
+        self.mlp = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(hidden, channels, 1, bias=False),
+        )
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x):
+        """Applies multi-branch channel attention.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape
+                (batch_size, channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor with channel attention applied.
+        """
+        avg_vec = self.avg_pool(x)
+        max_vec = self.max_pool(x)
+        sum_vec = avg_vec + max_vec
+
+        avg_out = self.mlp(avg_vec)
+        max_out = self.mlp(max_vec)
+        sum_out = self.mlp(sum_vec)
+
+        att = avg_out + max_out + sum_out
+        return x * self.act(att)
+
+class MCBAM(nn.Module):
+    """Multi-branch Convolutional Block Attention Module (M-CBAM).
+
+    Extends CBAM by using a multi-branch channel attention mechanism
+    combined with standard CBAM spatial attention.
+
+    Args:
+        channels (int): Number of input channels.
+        reduction (int, optional): Reduction ratio for channel MLP.
+            Defaults to 16.
+        spatial_kernel (int, optional): Kernel size for spatial attention.
+            Defaults to 7.
+
+    Attributes:
+        channel_att (MCBAMChannelAttention): Multi-branch channel attention module.
+        spatial_att (SpatialAttention): Standard spatial attention module.
+    
+    References: 
+        - "A Lightweight Rice Pest Detection Algorithm Using Improved Attention Mechanism and YOLOv8" 
+            (Yin et al., MDPI 2024) 
+            https://www.mdpi.com/2077-0472/14/7/1052
+    """
+
+    def __init__(self, c1, c2=None, reduction=16, spatial_kernel=7):
+        super().__init__()
+        self.channel_att = MCBAMChannelAttention(
+            c1, reduction=reduction)
+        self.spatial_att = SpatialAttention(kernel_size=spatial_kernel)
+
+    def forward(self, x):
+        """Applies M-CBAM sequentially (channel → spatial).
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output after channel + spatial attention.
+        """
+        x = self.channel_att(x)
+        x = self.spatial_att(x)
+        return x
+
+
