@@ -78,6 +78,13 @@ from ultralytics.nn.modules import (
     MCBAMChannelAttention,
     MCBAM,
     C2fG,
+    VoVGSCSP,
+    LNorm2d,
+    DropPath,
+    HorBlock,
+    GSConv,
+    GnConv,
+    CBAM,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -116,6 +123,7 @@ globals()['DualDDetect'] = DualDDetect
 globals()['MCBAMChannelAttention'] = MCBAMChannelAttention
 globals()['MCBAM'] = MCBAM
 globals()['C2fG'] = C2fG
+globals()['CBAM'] = CBAM
 
 
 class BaseModel(torch.nn.Module):
@@ -1631,6 +1639,9 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
             MCBAM,
             C2fG,
+            VoVGSCSP,
+            HorBlock,
+            GSConv,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1710,6 +1721,21 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        elif m is CBAM:
+            # CBAM only needs c1 (input channels) and optional kernel_size
+            # YAML options:
+            #   - [-1, 1, CBAM, []]        -> uses default kernel_size=7
+            #   - [-1, 1, CBAM, [3]]       -> uses kernel_size=3
+            #   - [-1, 1, CBAM, [7]]       -> uses kernel_size=7
+            c1 = ch[f]
+            c2 = c1  # CBAM doesn't change channel dimensions
+            
+            if len(args) == 0:
+                # No args provided, use defaults
+                args = [c1]  # CBAM(c1), kernel_size will use default=7
+            else:
+                # kernel_size provided
+                args = [c1, *args]  # CBAM(c1, kernel_size)
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect}
         ):

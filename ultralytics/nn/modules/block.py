@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, GSConv, GnConv, autopad
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -57,6 +57,10 @@ __all__ = (
     "CCBFuse",
     "CADown",
     "C2fG",
+    "VoVGSCSP",
+    "LNorm2d",
+    "DropPath",
+    "HorBlock",
 )
 
 
@@ -2261,3 +2265,230 @@ class C2fG(nn.Module):
         y = [y[0], y[1]]
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
+
+class VoVGSCSP(nn.Module):
+    """
+    VoVGSCSP: CSP-style block with GSConv modules
+    
+    Architecture flow:
+    1. Initial Conv
+    2. Split into two branches:
+       - Upper: GSConv → GSConv → Conv → C₂/2 channels
+       - Lower: Conv → C₁/2 channels  
+    3. Concat both branches
+    4. Final Conv → C₂ channels
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        n (int): Number of GSConv blocks in upper branch. Default: 1
+        e (float): Expansion ratio. Default: 0.5
+        k (int): Kernel size. Default: 5
+        s (int): Stride. Default: 1
+    
+    References:
+        - "Deep learning-based rice pest detection research"
+            (Xiong et al., PLoS ONE 2024)
+            https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0313387
+        
+        - "A lightweight YOLOv7 insulator defect detection algorithm based on DSC-SE"
+            (Zhang et al., PLoS ONE 2023)
+            https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0289162
+    """
+    
+    def __init__(self, c1, c2, n=1, e=0.5, k=5, s=1):
+        super().__init__()
+        c_ = int(c2 * e)  # Hidden channels
+        
+        # Initial convolution
+        self.cv1 = Conv(c1, c_, 1, 1)
+        
+        # Upper branch: Multiple GSConv blocks + final Conv
+        self.upper = nn.Sequential(
+            *[GSConv(c_, c_, k=k, s=1) for _ in range(n)],
+            Conv(c_, c_ // 2, 1, 1)
+        )
+        
+        # Lower branch: Single Conv (shortcut)
+        self.lower = Conv(c_, c_ // 2, 1, 1)
+        
+        # Final convolution after concat
+        self.cv2 = Conv(c_, c2, 1, 1)
+    
+    def forward(self, x):
+        """
+        Forward pass through VoVGSCSP block
+        
+        Args:
+            x (torch.Tensor): Input tensor [B, C₁, H, W]
+            
+        Returns:
+            torch.Tensor: Output tensor [B, C₂, H, W]
+        """
+        # Initial conv
+        x = self.cv1(x)
+        
+        # Upper branch (main path with GSConv blocks)
+        x_upper = self.upper(x)
+        
+        # Lower branch (shortcut path)
+        x_lower = self.lower(x)
+        
+        # Concatenate both branches
+        x_concat = torch.cat([x_upper, x_lower], dim=1)
+        
+        # Final convolution
+        out = self.cv2(x_concat)
+        
+        return out
+    
+class LNorm2d(nn.Module):
+    """
+    LayerNorm for 2D feature maps (channels-first format)
+    
+    Standard LayerNorm expects (B, H, W, C) but CNNs use (B, C, H, W).
+    This module handles the conversion.
+    
+    Args:
+        num_channels (int): Number of channels (C)
+        eps (float): Small value for numerical stability. Default: 1e-6
+    """
+    
+    def __init__(self, num_channels, eps=1e-6):
+        super().__init__()
+        self.norm = nn.LayerNorm(num_channels, eps=eps)
+    
+    def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor): Input tensor [B, C, H, W]
+            
+        Returns:
+            torch.Tensor: Normalized tensor [B, C, H, W]
+        """
+        # Permute: [B, C, H, W] → [B, H, W, C]
+        x = x.permute(0, 2, 3, 1)
+        
+        # Apply LayerNorm
+        x = self.norm(x)
+        
+        # Permute back: [B, H, W, C] → [B, C, H, W]
+        x = x.permute(0, 3, 1, 2)
+        
+        return x
+
+class DropPath(nn.Module):
+    """
+    Drop paths (Stochastic Depth) per sample
+    
+    Randomly drops entire samples during training for regularization.
+    Used in vision transformers and modern CNNs.
+    
+    Args:
+        drop_prob (float): Probability of dropping a path. Default: 0.0
+    """
+    
+    def __init__(self, drop_prob=0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+    
+    def forward(self, x):
+        """
+        Args:
+            x (torch.Tensor): Input tensor
+            
+        Returns:
+            torch.Tensor: Output with dropout applied
+        """
+        if self.drop_prob == 0.0 or not self.training:
+            return x
+        
+        keep_prob = 1 - self.drop_prob
+        
+        # Create random tensor matching input shape
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # (B, 1, 1, 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()  # Binarize: 0 or 1
+        
+        # Scale output to maintain expected value
+        output = x.div(keep_prob) * random_tensor
+        
+        return output
+
+class HorBlock(nn.Module):
+    """
+    Hierarchical Block (HorBlock) with Residual Connection
+    
+    Architecture flow:
+    Input (x)
+      │
+      ├─────────────────┐ (shortcut)
+      │                 │
+      ↓                 │
+    LayerNorm          │
+      ↓                 │
+    GnConv             │
+      ↓                 │
+      └────────(+)──────┘
+              ↓
+           Output
+    
+    The shortcut connection adds the input directly to the GnConv output.
+    If input/output channels differ, a 1x1 conv projects the shortcut.
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels (if None, c2 = c1)
+        order (int): GnConv hierarchy order. Default: 5
+        kernel (int): GnConv depthwise kernel size. Default: 7
+        s (float): GnConv scaling factor. Default: 1.0
+        drop_path (float): Drop path rate for stochastic depth. Default: 0.0
+    
+    References:
+        - "HorNet: Efficient High-Order Spatial Interactions with Recursive Gated Convolutions"
+            (Rao et al., NeurIPS 2022)
+            https://papers.nips.cc/paper_files/paper/2022/file/436d042b2dd81214d23ae43eb196b146-Paper-Conference.pdf
+    """
+    
+    def __init__(self, c1, c2=None, order=5, kernel=7, s=1.0, drop_path=0.0):
+        super().__init__()
+        
+        # Output channels default to input channels
+        c2 = c2 or c1
+        
+        # LayerNorm (applied on channel dimension)
+        self.norm = LNorm2d(c1)
+        
+        # GnConv main path
+        self.gnconv = GnConv(c1, c2, order=order, kernel=kernel, s=s)
+        
+        # Shortcut projection (if channel dimensions don't match)
+        self.shortcut = nn.Identity() if c1 == c2 else nn.Conv2d(c1, c2, 1, bias=False)
+        
+        # Drop path for stochastic depth (optional regularization)
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+    
+    def forward(self, x):
+        """
+        Forward pass with residual connection
+        
+        Args:
+            x (torch.Tensor): Input tensor [B, C1, H, W]
+            
+        Returns:
+            torch.Tensor: Output tensor [B, C2, H, W]
+        """
+        # Store input for shortcut
+        shortcut = self.shortcut(x)
+        
+        # Main path: LayerNorm → GnConv
+        x = self.norm(x)
+        x = self.gnconv(x)
+        
+        # Apply drop path if enabled
+        x = self.drop_path(x)
+        
+        # Residual connection
+        x = x + shortcut
+        
+        return x

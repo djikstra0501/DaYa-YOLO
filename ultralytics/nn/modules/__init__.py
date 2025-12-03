@@ -64,6 +64,10 @@ from .block import (
     CCBLinear,
     CADown,
     C2fG,
+    VoVGSCSP,
+    LNorm2d,
+    DropPath,
+    HorBlock,
 )
 from .conv import (
     CBAM,
@@ -83,6 +87,8 @@ from .conv import (
     ECA,
     MCBAMChannelAttention,
     MCBAM,
+    GSConv,
+    GnConv,
 )
 from .head import (
     OBB,
@@ -197,4 +203,10 @@ __all__ = (
     "MCBAMChannelAttention",
     "MCBAM",
     "C2fG",
+    "VoVGSCSP",
+    "LNorm2d",
+    "DropPath",
+    "HorBlock",
+    "GSConv",
+    "GnConv",
 )

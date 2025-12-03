@@ -27,6 +27,8 @@ __all__ = (
     "ECA",
     "MCBAMChannelAttention",
     "MCBAM",
+    "GSConv",
+    "GnConv",
 )
 
 
@@ -889,4 +891,170 @@ class MCBAM(nn.Module):
         x = self.spatial_att(x)
         return x
 
+class GSConv(nn.Module):
+    """
+    GSConv: Grid Sensitive Convolution
+    
+    Architecture flow:
+    1. Split input into two groups
+    2. Conv on first group → C₂/2 channels
+    3. Identity on second group → C₂/2 channels  
+    4. Concat both groups → C₂ channels
+    5. Channel shuffle for feature mixing
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        k (int): Kernel size. Default: 1
+        s (int): Stride. Default: 1
+        g (int): Groups for convolution. Default: 1
+        act (bool): Apply activation. Default: True
+    
+    References:
+        - "Deep learning-based rice pest detection research"
+            (Xiong et al., PLoS ONE 2024)
+            https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0313387
+        
+        - "A lightweight YOLOv7 insulator defect detection algorithm based on DSC-SE"
+            (Zhang et al., PLoS ONE 2023)
+            https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0289162
+    """
+    
+    def __init__(self, c1, c2, k=3, s=1, g=1, act=True):
+        super().__init__()
+        c_ = c2 // 2
 
+        # If stride=2, we replace pooling with a stride-2 conv
+        self.down = None
+        if s == 2:
+            self.down = Conv(c1, c1, k=3, s=2, p=1, act=act)
+
+        # GSConv inner operations always use stride=1
+        self.cv1 = Conv(c1 // 2, c_, k, 1, g=g, act=act)
+        self.cv2 = Conv(c1 // 2, c_, 1, 1, act=act)
+
+        self.s = s
+
+    def forward(self, x):
+        # Proper YOLO-compatible downsampling
+        if self.s == 2:
+            x = self.down(x)
+
+        # GSConv pathway
+        x1, x2 = x.chunk(2, dim=1)
+        x1 = self.cv1(x1)
+        x2 = self.cv2(x2)
+
+        out = torch.cat([x1, x2], dim=1)
+        return self.channel_shuffle(out, 2)
+
+    @staticmethod
+    def channel_shuffle(x, groups=2):
+        b, c, h, w = x.size()
+        g = groups
+        x = x.reshape(b, g, c // g, h, w)
+        x = x.transpose(1, 2).contiguous()
+        return x.reshape(b, c, h, w)
+
+class GnConv(nn.Module):
+    """
+    Recursive Gated Convolution (GnConv)
+    
+    Performs high-order spatial interactions with gated convolutions and recursive designs.
+    
+    Architecture:
+    1. Project input to 2x channels
+    2. Split into gating (pwa) and feature (abc) parts
+    3. Apply depthwise conv with multi-scale processing
+    4. Progressive pointwise convolutions with gating
+    5. Final projection to output channels
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels (if None, c2 = c1)
+        order (int): Hierarchy order for multi-scale processing. Default: 5
+        kernel (int): Kernel size for depthwise conv. Default: 7
+        s (float): Scaling factor for dwconv output. Default: 1.0
+        act (bool): Add activation (kept for compatibility). Default: False
+    
+    References:
+        - "HorNet: Efficient High-Order Spatial Interactions with Recursive Gated Convolutions"
+            (Rao et al., NeurIPS 2022)
+            https://papers.nips.cc/paper_files/paper/2022/file/436d042b2dd81214d23ae43eb196b146-Paper-Conference.pdf
+    """
+    
+    def __init__(self, c1, c2=None, order=5, kernel=7, s=1.0, act=False):
+        super().__init__()
+        
+        # Output channels default to input channels
+        c2 = c2 or c1
+        
+        self.order = order
+        self.scale = s
+        
+        # Calculate dimension hierarchy (from small to large)
+        # dims[0] is smallest, dims[-1] is largest
+        self.dims = [c1 // 2 ** i for i in range(order)]
+        self.dims.reverse()  # Now: [c1/2^(order-1), ..., c1/4, c1/2]
+        
+        # Input projection: c1 → 2*c1
+        # Split into: dims[0] for gating + sum(dims) for features
+        self.proj_in = nn.Conv2d(c1, self.dims[0] + sum(self.dims), 1, bias=False)
+        
+        # Depthwise convolution (integrated, no separate function)
+        self.dwconv = nn.Conv2d(
+            sum(self.dims), 
+            sum(self.dims), 
+            kernel_size=kernel, 
+            padding=(kernel - 1) // 2,
+            bias=True,
+            groups=sum(self.dims)  # Depthwise: each channel conv separately
+        )
+        
+        # Progressive pointwise convolutions
+        # Each pw conv expands from dims[i] → dims[i+1]
+        self.pws = nn.ModuleList([
+            nn.Conv2d(self.dims[i], self.dims[i + 1], 1, bias=False) 
+            for i in range(order - 1)
+        ])
+        
+        # Output projection: dims[-1] → c2
+        self.proj_out = nn.Conv2d(self.dims[-1], c2, 1, bias=False)
+        
+    def forward(self, x):
+        """
+        Forward pass through GnConv
+        
+        Args:
+            x (torch.Tensor): Input tensor [B, C1, H, W]
+            
+        Returns:
+            torch.Tensor: Output tensor [B, C2, H, W]
+        """
+        # Input projection
+        fused_x = self.proj_in(x)
+        
+        # Split into gating path (pwa) and feature path (abc)
+        pwa, abc = torch.split(
+            fused_x, 
+            (self.dims[0], sum(self.dims)), 
+            dim=1
+        )
+        
+        # Depthwise convolution with scaling
+        dw_abc = self.dwconv(abc) * self.scale
+        
+        # Split dwconv output into hierarchy
+        dw_list = torch.split(dw_abc, self.dims, dim=1)
+        
+        # First gating: pwa * dw_list[0]
+        x = pwa * dw_list[0]
+        
+        # Progressive pointwise convolutions with gating
+        for i in range(self.order - 1):
+            x = self.pws[i](x) * dw_list[i + 1]
+        
+        # Final output projection
+        x = self.proj_out(x)
+        
+        return x    
