@@ -2367,13 +2367,13 @@ class LNorm2d(nn.Module):
             torch.Tensor: Normalized tensor [B, C, H, W]
         """
         # Permute: [B, C, H, W] → [B, H, W, C]
-        x = x.permute(0, 2, 3, 1)
+        x = x.permute(0, 2, 3, 1).contiguous()
         
         # Apply LayerNorm
         x = self.norm(x)
         
         # Permute back: [B, H, W, C] → [B, C, H, W]
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 1, 2).contiguous()
         
         return x
 

@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 # Load your custom model config
-model = YOLO("ultralytics/cfg/models/v8/yolov8n-MCBAM.yaml")
+model = YOLO("ultralytics/cfg/models/v8/yolov8n-VoVGSCSP.yaml")
 
 # --- TRAIN TEST ---
 try:
