@@ -38,21 +38,21 @@ head:
 
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 11 upsample P5 → P4 size
   - [[-1, 6], 1, Concat, [1]]                    # 12 concat with P4
-  - [-1, 1, VoVGSCSP, [512, 1]]                  # 13
+  - [-1, 1, VoVGSCSP, [256, 1]]                  # 13
 
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 14 upsample → P3 size
   - [[-1, 4], 1, Concat, [1]]                    # 15 concat with P3
-  - [-1, 1, C2f, [256, True]]                    # 16 (P3_head)
+  - [-1, 1, C2f, [128, True]]                    # 16 (P3_head)
 
   # ================= BOTTOM–UP =================
 
   # P4 Head
-  - [-1, 1, Conv, [256, 3, 2]]                   # 17 downsample P3 → P4
+  - [-1, 1, Conv, [128, 3, 2]]                   # 17 downsample P3 → P4
   - [[-1, 13], 1, Concat, [1]]                   # 18 concat with top-down P4
-  - [-1, 1, C2f, [512, True]]                    # 19 (P4_head)
+  - [-1, 1, C2f, [256, True]]                    # 19 (P4_head)
 
   # P5 Head
-  - [-1, 1, GSConv, [512, 3, 2]]                 # 20 downsample P4 → P5
+  - [-1, 1, GSConv, [256, 3, 2]]                 # 20 downsample P4 → P5
   - [[-1, 10], 1, Concat, [1]]                   # 21 concat with backbone P5
   - [-1, 1, C2f, [512, True]]                    # 22
   - [-1, 1, CBAM, []]                            # 23 (P5_head)

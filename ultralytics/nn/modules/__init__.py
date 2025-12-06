@@ -89,6 +89,7 @@ from .conv import (
     MCBAM,
     GSConv,
     GnConv,
+    SpatialAttention2,
 )
 from .head import (
     OBB,
@@ -209,4 +210,5 @@ __all__ = (
     "HorBlock",
     "GSConv",
     "GnConv",
+    "SpatialAttention2",
 )

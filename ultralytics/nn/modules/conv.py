@@ -29,6 +29,7 @@ __all__ = (
     "MCBAM",
     "GSConv",
     "GnConv",
+    "SpatialAttention2",
 )
 
 
@@ -642,7 +643,7 @@ class CBAM(nn.Module):
         """
         super().__init__()
         self.channel_attention = ChannelAttention(c1)
-        self.spatial_attention = SpatialAttention(kernel_size)
+        self.spatial_attention = SpatialAttention2(kernel_size)
 
     def forward(self, x):
         """
@@ -849,6 +850,22 @@ class MCBAMChannelAttention(nn.Module):
         att = avg_out + max_out + sum_out
         return x * self.act(att)
 
+class SpatialAttention2(nn.Module):
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = torch.mean(x, dim=1, keepdim=True)
+        maxv = torch.max(x, dim=1, keepdim=True)[0]
+
+        att = torch.cat([avg, maxv], dim=1)
+        mask = self.sigmoid(self.conv(att))   # (B,1,H,W)
+
+        return x * mask.expand_as(x)
+
 class MCBAM(nn.Module):
     """Multi-branch Convolutional Block Attention Module (M-CBAM).
 
@@ -994,7 +1011,8 @@ class GnConv(nn.Module):
         
         # Calculate dimension hierarchy (from small to large)
         # dims[0] is smallest, dims[-1] is largest
-        self.dims = [c1 // 2 ** i for i in range(order)]
+        dim = c1 // self.order
+        self.dims = [dim] * self.order
         self.dims.reverse()  # Now: [c1/2^(order-1), ..., c1/4, c1/2]
         
         # Input projection: c1 → 2*c1
