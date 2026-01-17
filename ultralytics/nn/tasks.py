@@ -1768,6 +1768,12 @@ def parse_model(d, ch, verbose=True):
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
             args = [c1, c2, *args[1:]]
+        elif m is CADown:
+            c1 = ch[f]
+            c2 = args[0] if len(args) else c1
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [c1, c2]  # inject correct c1
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]
