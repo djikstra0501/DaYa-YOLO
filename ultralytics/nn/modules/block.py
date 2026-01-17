@@ -2070,7 +2070,7 @@ class CIBPGI(nn.Module):
             Conv(c_, c2, 1, 1, act=False)  # project to output channels
         )
         # optional small gating (learnable)
-        self.pg_gate = nn.Parameter(torch.tensor(0.0))  # scalar to scale PG contribution; initialized 0 -> warm start
+        self.pg_gate = nn.Parameter(torch.zeros(1))  # scalar to scale PG contribution; initialized 0 -> warm start
         self.use_residual = use_residual
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -2095,68 +2095,31 @@ class CIBPGI(nn.Module):
 class CCBLinear(nn.Module):
     """
     Conv that splits its output into multiple channel groups.
-    Supports being initialized either as:
-      CCBLinear(c1, c2s, k=1, s=1, p=None, g=1)
-    or (parser/YAML style):
-      CCBLinear([c2, c2, ...])
-    If c1 isn't known at init time we lazily build the internal Conv on first forward.
     """
-
-    def __init__(self, *args, k=1, s=1, p=None, g=1):
+    def __init__(self, c2s, k=1, s=1, p=None, g=1):
         super().__init__()
-        # normalize args:
-        # possible forms:
-        #  (c1:int, c2s:list[int], k=..., ...)
-        #  (c2s:list[int],)
-        self.k = k
-        self.s = s
-        self.p = p
-        self.g = g
-        self.conv = None  # will be created when c1 is known
-        self._built = False
-
-        if len(args) == 0:
-            raise TypeError("CCBLinear requires at least c2s or (c1, c2s)")
-        if isinstance(args[0], (list, tuple)):
-            # called as CCBLinear([c2, c2, ...])  (no c1)
-            self.c1 = None
-            self.c2s = list(args[0])
-        else:
-            # called as CCBLinear(c1, c2s)
-            self.c1 = int(args[0])
-            if len(args) < 2:
-                raise TypeError("CCBLinear missing c2s argument")
-            self.c2s = list(args[1])
-
-        # output channel count (sum of groups) -- used by parser expectations
+        if isinstance(c2s, (list, tuple)) and len(c2s) == 1 and isinstance(c2s[0], (list, tuple)):
+            c2s = c2s[0]
+            
+        self.c2s = list(c2s)
         self.c2 = int(sum(self.c2s))
+        self.k, self.s, self.p, self.g = k, s, p, g
 
-        # if c1 known at init, build conv now
-        if self.c1 is not None:
-            self._build_conv(self.c1)
-
-    def _build_conv(self, c1: int, device=None, dtype=None):
-        """Create internal conv with known input channels."""
+        self.conv = None
+        self._built = False
+    
+    def _build(self, c1: int, device, dtype):
         if self._built:
             return
-        conv = nn.Conv2d(
-            int(c1),
-            self.c2,
-            self.k,
-            self.s,
-            autopad(self.k, self.p),
-            groups=self.g,
-            bias=True,
-        )
-        if device is not None:
-            conv = conv.to(device=device, dtype=dtype)
-        self.conv = conv
+        conv = nn.Conv2d(int(c1), self.c2, self.k, self.s, autopad(self.k, self.p), groups=self.g, bias=True)
+        self.conv = conv.to(device=device, dtype=dtype)
         self._built = True
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self._built:
-            self._build_conv(x.shape[1], device=x.device, dtype=x.dtype)
-        return self.conv(x).split(self.c2s, dim=1)
+            self._build(x.shape[1], x.device, x.dtype)
+        return self.conv(x)
+
 
 
 class CCBFuse(nn.Module):
@@ -2165,40 +2128,41 @@ class CCBFuse(nn.Module):
     Accepts either idx as list[int] or as nested lists from YAML.
     """
 
-    def __init__(self, idx):
+    def __init__(self, idx, c_out=None):
         super().__init__()
         # allow nested lists like [[0,0,0]] from YAML; flatten if necessary
         if isinstance(idx, (list, tuple)) and len(idx) == 1 and isinstance(idx[0], (list, tuple)):
             idx = idx[0]
-        self.idx = torch.tensor(idx, dtype=torch.long)
-        self.c2 = None  # placeholder
+        self.register_buffer("idx", torch.tensor(idx, dtype=torch.long), persistent=False)
+        self.proj = None
+        self._built = False
+        self.c_out = c_out
     
-    @property
-    def out_channels(self):
-        """
-        Return the expected number of output channels for the parser.
-        Sum of selected channels from input tensors.
-        This is used by parse_model to compute c2.
-        """
-        if self.c2 is not None:
-            return self.c2
-        # fallback default if unknown
-        return len(self.idx)
+    def _build(self, c_in_picked: int, c_out: int, device, dtype):
+        
+        self.proj = nn.Conv2d(c_in_picked, c_out, 1, 1, 0, bias=False).to(device=device, dtype=dtype)
+        self._built = True
 
-    def forward(self, xs: list[torch.Tensor]) -> torch.Tensor:
-        # xs: list of tensors, last one is the target spatial size
-        target_hw = xs[-1].shape[2:]
-        # pick channels from each tensor using index and resample to target
-        resampled = []
+    def forward(self, xs):
+        aux = xs[-1]
+        target_hw = aux.shape[2:]
+        
+        picked_list = []
         for x in xs[:-1]:
-            # if x has fewer channels than max idx, guard by modulo (optional) or raise
-            if self.idx.max().item() >= x.shape[1]:
-                raise ValueError(f"CCBFuse index {self.idx.max().item()} out of range for tensor with {x.shape[1]} channels")
+            # if x is tuple/list -> concat it (only if you kept split somewhere)
+            if isinstance(x, (tuple, list)):
+                x = torch.cat(list(x), dim=1)
             picked = x.index_select(1, self.idx)
-            resampled.append(F.interpolate(picked, size=target_hw, mode="nearest"))
-        # include final tensor as-is (already matching target_hw)
-        all_parts = resampled + [xs[-1]]
-        return torch.sum(torch.stack(all_parts), dim=0)
+            picked = F.interpolate(picked, size=target_hw, mode="nearest")
+            picked_list.append(picked)
+
+        token = torch.stack(picked_list, dim=0).sum(dim=0)  # (B, len(idx), H, W)
+
+        if not self._built:
+            self._build(token.shape[1], aux.shape[1], aux.device, aux.dtype)
+
+        token = self.proj(token)  # (B, C_aux, H, W)
+        return aux + token
 
 
 class CADown(nn.Module):
