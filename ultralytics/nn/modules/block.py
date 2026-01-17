@@ -2135,7 +2135,7 @@ class CCBLinear(nn.Module):
         if self.c1 is not None:
             self._build_conv(self.c1)
 
-    def _build_conv(self, c1: int):
+    def _build_conv(self, c1: int, device=None, dtype=None):
         """Create internal conv with known input channels."""
         if self._built:
             return
