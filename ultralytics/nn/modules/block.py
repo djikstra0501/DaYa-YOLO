@@ -2139,7 +2139,7 @@ class CCBLinear(nn.Module):
         """Create internal conv with known input channels."""
         if self._built:
             return
-        self.conv = nn.Conv2d(
+        conv = nn.Conv2d(
             int(c1),
             self.c2,
             self.k,
@@ -2148,17 +2148,15 @@ class CCBLinear(nn.Module):
             groups=self.g,
             bias=True,
         )
+        if device is not None:
+            conv = conv.to(device=device, dtype=dtype)
+        self.conv = conv
         self._built = True
 
     def forward(self, x: torch.Tensor):
-        # lazy build if needed
         if not self._built:
-            in_c = x.shape[1]
-            self._build_conv(in_c)
-
-        y = self.conv(x)
-        # returns a tuple/list of tensors split by channel groups
-        return y.split(self.c2s, dim=1)
+            self._build_conv(x.shape[1], device=x.device, dtype=x.dtype)
+        return self.conv(x).split(self.c2s, dim=1)
 
 
 class CCBFuse(nn.Module):
