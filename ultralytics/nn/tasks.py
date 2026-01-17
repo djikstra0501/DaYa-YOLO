@@ -1762,6 +1762,12 @@ def parse_model(d, ch, verbose=True):
             # unwrap [[...]] if needed
             tmp = c2s[0] if isinstance(c2s, (list, tuple)) and len(c2s)==1 and isinstance(c2s[0], (list, tuple)) else c2s
             c2 = int(sum(tmp))
+        elif m is CIBPGI:
+            c1 = ch[f]
+            c2 = args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]

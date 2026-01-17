@@ -56,19 +56,19 @@ head:
   # aux down path (start from input stream like original yolo9 pattern)
   - [3, 1, Conv, [64, 3, 2]]                   # 26 aux P1/2
   - [-1, 1, Conv, [128, 3, 2]]                  # 27 aux P2/4
-  - [-1, 1, CIBPGI, [256, 256, False, 0.5]]    # 28 aux refine (A3)
+  - [-1, 1, CIBPGI, [256, False, 0.5]]    # 28 aux refine (A3)
   - [-1, 1, CADown, [256, 256]]                       # 29 aux P3/8
   - [ [23, 24, 25, -1], 1, CCBFuse, [ [0,0,0] ]]   # 30 fuse -> A3 output
 
-  - [-1, 1, CIBPGI, [512, 512, False, 0.5]]    # 31 aux refine P4
+  - [-1, 1, CIBPGI, [512, False, 0.5]]    # 31 aux refine P4
   - [-1, 1, CADown, [512, 512]]                       # 32 aux P4/16
   - [ [24, 25, -1], 1, CCBFuse, [ [1,1] ]]         # 33 fuse -> A4 output
 
-  - [-1, 1, CIBPGI, [1024, 1024, False, 0.5]]  # 34 aux refine P5
+  - [-1, 1, CIBPGI, [1024, False, 0.5]]  # 34 aux refine P5
   - [-1, 1, CADown, [1024, 1024]]                      # 35 aux P5/32
   - [ [25, -1], 1, CCBFuse, [ [2] ]]               # 36 fuse -> A5
 
-  - [-1, 1, CIBPGI, [1024, 1024, False, 0.5]]  # 37 final aux refine
+  - [-1, 1, CIBPGI, [1024, False, 0.5]]  # 37 final aux refine
 
   # --- final detect: combine aux and main features
   # DualDDetect implemented from YOLOv9
