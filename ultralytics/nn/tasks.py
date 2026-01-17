@@ -1753,19 +1753,15 @@ def parse_model(d, ch, verbose=True):
         elif m is CBFuse:
             c2 = ch[f[-1]]
         elif m is CCBFuse:
-            # args[0] contains idx list from YAML 
-            idx = args[0] 
-            # recursively flatten nested lists/tuples 
-            def flatten(lst): 
-                for item in lst: 
-                    if isinstance(item, (list, tuple)): 
-                        yield from flatten(item) 
-                    else: 
-                        yield item 
-            idx = list(flatten(idx)) # fully flattened list of indices 
-            idx = [int(i) for i in idx] # sum input channels from idx 
-            c2 = sum([ch[i] for i in idx])
-            
+            c2 = ch[f[-1]]
+        elif m is CCBLinear:
+            c1 = ch[f]
+            c2s = args[0]
+            args = [c1, c2s, *args[1:]]
+            # output channels for bookkeeping
+            # unwrap [[...]] if needed
+            tmp = c2s[0] if isinstance(c2s, (list, tuple)) and len(c2s)==1 and isinstance(c2s[0], (list, tuple)) else c2s
+            c2 = int(sum(tmp))
         elif m in frozenset({TorchVision, Index}):
             c2 = args[0]
             c1 = ch[f]
