@@ -1312,6 +1312,10 @@ class DualDDetect(nn.Module):
         # split inputs
         main_feats = x[: self.nl]
         aux_feats = x[self.nl :]
+        
+        assert len(main_feats) == len(aux_feats) == self.nl
+        for i in range(self.nl):
+            assert main_feats[i].shape[-2:] == aux_feats[i].shape[-2:], (i, main_feats[i].shape, aux_feats[i].shape)
 
         # produce predictions per-level
         d1 = [torch.cat((self.cv2[i](main_feats[i]), self.cv3[i](main_feats[i])), 1) for i in range(self.nl)]

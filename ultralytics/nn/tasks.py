@@ -1737,12 +1737,12 @@ def parse_model(d, ch, verbose=True):
                 # kernel_size provided
                 args = [c1, *args]  # CBAM(c1, kernel_size)
         elif m in frozenset(
-            {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect}
+            {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect, DualDDetect}
         ):
             args.append([ch[x] for x in f])
             if m is Segment or m is YOLOESegment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
-            if m in {Detect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB}:
+            if m in {DualDDetect, Detect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB}:
                 m.legacy = legacy
         elif m is RTDETRDecoder:  # special case, channels arg must be passed in index 1
             args.insert(1, [ch[x] for x in f])
@@ -1753,7 +1753,10 @@ def parse_model(d, ch, verbose=True):
         elif m is CBFuse:
             c2 = ch[f[-1]]
         elif m is CCBFuse:
-            c2 = ch[f[-1]]
+            c_out = ch[f[-1]]          # aux channels (last input)
+            idx = args[0]              # from YAML
+            args = [idx, c_out]
+            c2 = c_out                 # output channels equals aux channels
         elif m is CCBLinear:
             c1 = ch[f]
             c2s = args[0]

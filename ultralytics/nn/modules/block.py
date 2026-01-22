@@ -2118,31 +2118,27 @@ class CCBFuse(nn.Module):
     Accepts either idx as list[int] or as nested lists from YAML.
     """
 
-    def __init__(self, idx):
+    def __init__(self, idx, c_out):
         super().__init__()
         if isinstance(idx, (list, tuple)) and len(idx) == 1 and isinstance(idx[0], (list, tuple)):
             idx = idx[0]
-        self.register_buffer("idx", torch.tensor(list(map(int, idx)), dtype=torch.long), persistent=False)
+        self.register_buffer("idx", torch.tensor(idx, dtype=torch.long), persistent=False)
+        self.proj = nn.Conv2d(len(self.idx), c_out, 1, 1, 0, bias=False)
 
     def forward(self, xs):
         aux = xs[-1]
-        target_hw = aux.shape[2:]
+        H, W = aux.shape[2:]
+        picked_list = []
+        for x in xs[:-1]:
+            if isinstance(x, (tuple, list)):
+                x = torch.cat(list(x), dim=1)
+            picked = x.index_select(1, self.idx)     # B x len(idx) x h x w
+            picked = F.interpolate(picked, size=(H, W), mode="nearest")
+            picked_list.append(picked)
 
-        # idx length must match number of token inputs (xs[:-1])
-        if len(xs) - 1 != self.idx.numel():
-            raise ValueError(f"CCBFuse: idx has {self.idx.numel()} items but got {len(xs)-1} token inputs")
-
-        fused = None
-        for j, token in enumerate(xs[:-1]):
-            if not isinstance(token, (tuple, list)):
-                raise TypeError(f"CCBFuse expected token input {j} to be tuple/list from CCBLinear, got {type(token)}")
-
-            g = token[int(self.idx[j])]
-            g = F.interpolate(g, size=target_hw, mode="nearest")
-
-            fused = g if fused is None else (fused + g)
-
-        return aux + fused
+        token = torch.stack(picked_list, dim=0).sum(dim=0)  # B x len(idx) x H x W
+        token = self.proj(token)                            # B x c_out x H x W
+        return aux + token
 
 
 class CADown(nn.Module):
