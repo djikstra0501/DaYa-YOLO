@@ -54,8 +54,8 @@ head:
   - [7, 1, CCBLinear, [[256, 512, 1024]]]       # 25
 
   # aux down path (start from input stream like original yolo9 pattern)
-  - [1, 1, Conv, [64, 3, 2]]                   # 26 aux P1/2
-  - [-1, 1, Conv, [128, 3, 2]]                  # 27 aux P2/4
+  - [1, 1, Conv, [64, 3, 1]]                   # 26 aux P1/2
+  - [-1, 1, Conv, [128, 3, 1]]                  # 27 aux P2/4
   - [-1, 1, CIBPGI, [256, False, 0.5]]    # 28 aux refine (A3)
   - [-1, 1, CADown, [256]]                       # 29 aux P3/8
   - [ [23, 24, 25, -1], 1, CCBFuse, [ [0] ]]   # 30 fuse -> A3 output
