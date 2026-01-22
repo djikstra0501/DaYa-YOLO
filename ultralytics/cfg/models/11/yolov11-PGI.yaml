@@ -54,7 +54,7 @@ head:
   - [7, 1, CCBLinear, [[256, 512, 1024]]]       # 25
 
   # aux down path (start from input stream like original yolo9 pattern)
-  - [3, 1, Conv, [64, 3, 2]]                   # 26 aux P1/2
+  - [1, 1, Conv, [64, 3, 2]]                   # 26 aux P1/2
   - [-1, 1, Conv, [128, 3, 2]]                  # 27 aux P2/4
   - [-1, 1, CIBPGI, [256, False, 0.5]]    # 28 aux refine (A3)
   - [-1, 1, CADown, [256]]                       # 29 aux P3/8
@@ -72,4 +72,4 @@ head:
 
   # --- final detect: combine aux and main features
   # DualDDetect implemented from YOLOv9
-  - [[16, 19, 22, 31, 34, 37], 1, DualDDetect, [nc]]
+  - [[16, 19, 22, 30, 33, 36], 1, DualDDetect, [nc]]

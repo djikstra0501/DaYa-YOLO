@@ -1313,6 +1313,9 @@ class DualDDetect(nn.Module):
         main_feats = x[: self.nl]
         aux_feats = x[self.nl :]
         
+        for i in range(self.nl):
+            print(i, main_feats[i].shape, aux_feats[i].shape)
+
         assert len(main_feats) == len(aux_feats) == self.nl
         for i in range(self.nl):
             assert main_feats[i].shape[-2:] == aux_feats[i].shape[-2:], (i, main_feats[i].shape, aux_feats[i].shape)
