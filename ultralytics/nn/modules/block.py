@@ -2039,6 +2039,7 @@ class SAVPE(nn.Module):
 
         return F.normalize(aggregated.transpose(-2, -3).reshape(B, Q, -1), dim=-1, p=2)
 
+# PGI Style Model
 class CIBPGI(nn.Module):
     """
     CIB with a lightweight PGI global branch.
@@ -2162,7 +2163,8 @@ class CADown(nn.Module):
         x2 = F.max_pool2d(x2, 3, 2, 1)
         x2 = self.cv2(x2)
         return torch.cat((x1, x2), 1)
-    
+
+# Reference Model   
 class C2fG(nn.Module):
     """C2f block using Ghost Bottleneck instead of standard Bottleneck.
     

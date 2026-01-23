@@ -1327,11 +1327,13 @@ class DualDDetect(nn.Module):
         # TRAINING: return same structure as Detect -> list of per-layer tensors
         # Combine main and aux lists into a single list: [main0, main1, main2, aux0, aux1, aux2]
         if self.training:
-            return d1 + d2
+            # return d1 + d2 # Currently just use d1 because distilling learning is not implemented
+            return d1
 
         # INFERENCE: use inference helper
         y = self._inference(d1, d2)
-        return y if self.export else (y, {"main": d1, "aux": d2})
+        # return y if self.export else (y, d1 + d2) # Currently just use d1 because distilling learning is not implemented
+        return y if self.export else (y, d1)
 
     def forward_end2end(self, x: List[torch.Tensor]):
         xd = [t.detach() for t in x]
@@ -1363,7 +1365,8 @@ class DualDDetect(nn.Module):
 
         shape = d1[0].shape  # BCHW
         # concat all preds across levels in channel axis then flatten per anchor
-        x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1 + d2], 2)
+        # x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1 + d2], 2) # can't be use because distilling learn is not implemented yet
+        x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1], 2)
 
         # anchor generation: use main branch feature maps (d1)
         if self.dynamic or self.shape != shape:

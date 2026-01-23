@@ -17,59 +17,59 @@ scales: # model compound scaling constants, i.e. 'model=yolo11n.yaml' will call 
 # YOLO11n backbone
 backbone:
   # [from, repeats, module, args]
-  - [-1, 1, Conv, [64, 3, 2]] # 0-P1/2
-  - [-1, 1, Conv, [128, 3, 2]] # 1-P2/4
+  - [-1, 1, nn.Identity, []] # Raw Image
+  - [-1, 1, Conv, [64, 3, 2]] # 1-P1/2
+  - [-1, 1, Conv, [128, 3, 2]] # 2-P2/4
   - [-1, 2, C3k2, [256, False, 0.25]]
-  - [-1, 1, Conv, [256, 3, 2]] # 3-P3/8
+  - [-1, 1, Conv, [256, 3, 2]] # 4-P3/8
   - [-1, 2, C3k2, [512, False, 0.25]]
-  - [-1, 1, Conv, [512, 3, 2]] # 5-P4/16
+  - [-1, 1, Conv, [512, 3, 2]] # 6-P4/16
   - [-1, 2, C3k2, [512, True]]
-  - [-1, 1, Conv, [1024, 3, 2]] # 7-P5/32
+  - [-1, 1, Conv, [1024, 3, 2]] # 8-P5/32
   - [-1, 2, C3k2, [1024, True]]
-  - [-1, 1, SPPF, [1024, 5]] # 9
-  - [-1, 2, C2PSA, [1024]] # 10
+  - [-1, 1, SPPF, [1024, 5]] # 10
+  - [-1, 2, C2PSA, [1024]] # 11
 
 # YOLO11n head
 head:
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 6], 1, Concat, [1]] # cat backbone P4
-  - [-1, 2, C3k2, [512, False]] # 13
+  - [[-1, 7], 1, Concat, [1]] # cat backbone P4
+  - [-1, 2, C3k2, [512, False]] # 14
 
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 4], 1, Concat, [1]] # cat backbone P3
-  - [-1, 2, C3k2, [256, False]] # 16 (P3/8-small)
+  - [[-1, 5], 1, Concat, [1]] # cat backbone P3
+  - [-1, 2, C3k2, [256, False]] # 17 (P3/8-small)
 
   - [-1, 1, Conv, [256, 3, 2]]
-  - [[-1, 13], 1, Concat, [1]] # cat head P4
-  - [-1, 2, C3k2, [512, False]] # 19 (P4/16-medium)
+  - [[-1, 14], 1, Concat, [1]] # cat head P4
+  - [-1, 2, C3k2, [512, False]] # 20 (P4/16-medium)
 
   - [-1, 1, Conv, [512, 3, 2]]
-  - [[-1, 10], 1, Concat, [1]] # cat head P5
-  - [-1, 2, C3k2, [1024, True]] # 22 (P5/32-large)
+  - [[-1, 11], 1, Concat, [1]] # cat head P5
+  - [-1, 2, C3k2, [1024, True]] # 23 (P5/32-large)
 
   # PGI auxiliary branch (light)
-  # routing: get tokens from backbone P3 (index 3), P4 (5), P5 (7)
-  - [3, 1, CCBLinear, [[256]]]                  # 23
-  - [5, 1, CCBLinear, [[256, 512]]]             # 24
-  - [7, 1, CCBLinear, [[256, 512, 1024]]]       # 25
+  # routing: get tokens from backbone P3 (index 4), P4 (6), P5 (8)
+  - [4, 1, CCBLinear, [[256]]]                  # 24
+  - [6, 1, CCBLinear, [[256, 512]]]             # 25
+  - [8, 1, CCBLinear, [[256, 512, 1024]]]       # 26
 
   # aux down path (start from input stream like original yolo9 pattern)
-  - [1, 1, Conv, [64, 3, 1]]                   # 26 aux P1/2
-  - [-1, 1, Conv, [128, 3, 1]]                  # 27 aux P2/4
-  - [-1, 1, CIBPGI, [256, False, 0.5]]    # 28 aux refine (A3)
-  - [-1, 1, CADown, [256]]                       # 29 aux P3/8
-  - [ [23, 24, 25, -1], 1, CCBFuse, [ [0] ]]   # 30 fuse -> A3 output
+  - [0, 1, Conv, [64, 3, 2]]                   # 27 aux P1/2
+  - [-1, 1, Conv, [128, 3, 2]]                  # 28 aux P2/4
 
-  - [-1, 1, CIBPGI, [512, False, 0.5]]    # 31 aux refine P4
-  - [-1, 1, CADown, [512]]                       # 32 aux P4/16
-  - [ [24, 25, -1], 1, CCBFuse, [ [0] ]]         # 33 fuse -> A4 output
+  - [-1, 1, CIBPGI, [256, False, 0.5]]    # 29 aux refine (A3)
+  - [-1, 1, CADown, [256]]                       # 30 aux P3/8
+  - [ [24, 25, 26, -1], 1, CCBFuse, [ [0] ]]   # 31 fuse -> A3 output
 
-  - [-1, 1, CIBPGI, [1024, False, 0.5]]  # 34 aux refine P5
-  - [-1, 1, CADown, [1024]]                      # 35 aux P5/32
-  - [ [25, -1], 1, CCBFuse, [ [0] ]]               # 36 fuse -> A5
+  - [-1, 1, CIBPGI, [512, False, 0.5]]    # 32 aux refine P4
+  - [-1, 1, CADown, [512]]                       # 33 aux P4/16
+  - [ [25, 26, -1], 1, CCBFuse, [ [0] ]]         # 34 fuse -> A4 output
 
-  - [-1, 1, CIBPGI, [1024, False, 0.5]]  # 37 final aux refine
+  - [-1, 1, CIBPGI, [1024, False, 0.5]]  # 35 aux refine P5
+  - [-1, 1, CADown, [1024]]                      # 36 aux P5/32
+  - [ [26, -1], 1, CCBFuse, [ [0] ]]               # 37 fuse -> A5
 
   # --- final detect: combine aux and main features
   # DualDDetect implemented from YOLOv9
-  - [[16, 19, 22, 30, 33, 36], 1, DualDDetect, [nc]]
+  - [[17, 20, 23, 31, 34, 37], 1, DualDDetect, [nc]]
