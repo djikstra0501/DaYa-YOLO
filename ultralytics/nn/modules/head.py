@@ -1243,7 +1243,6 @@ class DualDDetect(nn.Module):
     xyxy = False
 
     def __init__(self, nc=80, ch=()):
-        print("[DEBUG] DualDDetect got ch =", ch)
         super().__init__()
         self.nc = nc
 
@@ -1251,13 +1250,11 @@ class DualDDetect(nn.Module):
         self.nl = len(ch) // 2
         self.reg_max = 16
         self.no = nc + self.reg_max * 4
-        self.stride = torch.zeros(self.nl)
-
+        self.stride = None
+        
         # split channels
         ch_main = ch[: self.nl]
         ch_aux = ch[self.nl :]
-        print("[DEBUG] ch_main =", ch_main)
-        print("[DEBUG] ch_aux =", ch_aux)
 
         # main branch convs (YOLOv11-style)
         c2_m = max((16, ch_main[0] // 4, self.reg_max * 4))
@@ -1313,8 +1310,6 @@ class DualDDetect(nn.Module):
         main_feats = x[: self.nl]
         aux_feats = x[self.nl :]
         
-        # for i in range(self.nl):
-        #     print(i, main_feats[i].shape, aux_feats[i].shape)
 
         # assert len(main_feats) == len(aux_feats) == self.nl
         # for i in range(self.nl):
@@ -1328,9 +1323,10 @@ class DualDDetect(nn.Module):
         # Combine main and aux lists into a single list: [main0, main1, main2, aux0, aux1, aux2]
         if self.training:
             return (d1, d2)
-
+        
         # INFERENCE: use inference helper
         y = self._inference(d1, d2, decode_aux=False)
+
         return y if self.export else (y, (d1, d2))
 
     def forward_end2end(self, x: List[torch.Tensor]):
@@ -1360,6 +1356,10 @@ class DualDDetect(nn.Module):
 
     def _inference(self, d1: List[torch.Tensor], d2: List[torch.Tensor], decode_aux: bool = False) -> torch.Tensor:
         # d1 and d2 are lists of per-level pred tensors
+        
+        if self.stride is None:
+            # bootstrap for anchors/decoding
+            self.stride = torch.tensor([8., 16., 32.], device=d1[0].device)
 
         shape = d1[0].shape  # BCHW
         if decode_aux:
@@ -1375,10 +1375,14 @@ class DualDDetect(nn.Module):
 
         box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
         dbox = self.decode_bboxes(self.dfl_main(box), self.anchors.unsqueeze(0)) * self.strides
-        return torch.cat((dbox, cls.sigmoid()), 1)
+        out = torch.cat((dbox, cls.sigmoid()), 1)
+        return out.permute(0, 2, 1).contiguous()
 
     def bias_init(self):
         # identical to Detect bias init but for both sets
+        if self.stride is None:
+            return
+            
         for a, b, s in zip(self.cv2, self.cv3, self.stride):
             a[-1].bias.data[:] = 1.0
             b[-1].bias.data[: self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
@@ -1395,8 +1399,14 @@ class DualDDetect(nn.Module):
                 a[-1].bias.data[:] = 1.0
                 b[-1].bias.data[: self.nc] = math.log(5 / self.nc / (640 / s) ** 2)
 
-    def decode_bboxes(self, bboxes, anchors, xywh=True):
-        return dist2bbox(bboxes, anchors, xywh=xywh and not self.end2end and not self.xyxy, dim=1)
+    def decode_bboxes(self, bboxes: torch.Tensor, anchors: torch.Tensor, xywh: bool = True) -> torch.Tensor:
+        """Decode bounding boxes from predictions."""
+        return dist2bbox(
+            bboxes,
+            anchors,
+            xywh=xywh and not self.end2end and not self.xyxy,
+            dim=1,
+        )
 
     @staticmethod
     def postprocess(preds: torch.Tensor, max_det: int, nc: int = 80) -> torch.Tensor:

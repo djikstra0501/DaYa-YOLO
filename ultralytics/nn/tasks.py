@@ -1798,7 +1798,6 @@ def parse_model(d, ch, verbose=True):
             else:
                 c2 = int(ch[int(f)])
 
-        print(f"[DEBUG] Building layer: {m} with args={args}")
         m_ = torch.nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         m_.np = sum(x.numel() for x in m_.parameters())  # number params
