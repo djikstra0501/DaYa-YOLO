@@ -855,3 +855,29 @@ class TVPSegmentLoss(TVPDetectLoss):
         vp_loss = self.vp_criterion((vp_feats, pred_masks, proto), batch)
         cls_loss = vp_loss[0][2]
         return cls_loss, vp_loss[1]
+
+class DualDDetectLoss:
+    def __init__(self, model, aux_weight: float = 0.5, tal_topk: int = 10):
+        self.main = v8DetectionLoss(model, tal_topk=tal_topk)
+        self.aux = v8DetectionLoss(model, tal_topk=tal_topk)
+        self.aux_weight = aux_weight
+    
+    def __call__(self, preds, batch):
+        
+        feats = preds[1] if isinstance(preds, tuple) else preds
+        
+        if isinstance(feats, tuple) and len(feats) == 2:
+            main_feats, aux_feats = feats
+        else:
+            main_feats, aux_feats = feats, None
+        
+        loss_main, items_main = self.main(main_feats, batch)
+        
+        if aux_feats is None:
+            return loss_main, items_main
+        
+        loss_aux, items_aux = self.aux(aux_feats, batch)
+        
+        loss = loss_main + self.aux_weight * loss_aux
+        items = items_main + self.aux_weight * items_aux
+        return loss, items
