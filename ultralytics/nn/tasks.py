@@ -530,13 +530,11 @@ class DetectionModel(BaseModel):
             self.stride = m.stride
             self.model.train()  # Set model back to training(default) mode
             m.bias_init()  # only run once
-            LOGGER.warning(f"[BIAS-DEBUG] cls bias sample after bias_init = {m.cv3[0][-1].bias[:5].data}")
         else:
             self.stride = torch.Tensor([32])  # default stride for i.e. RTDETR
 
         # Init weights, biases
         initialize_weights(self)
-        LOGGER.warning(f"[BIAS-DEBUG] cls bias sample after init_weights = {m.cv3[0][-1].bias[:5].data}")
         if verbose:
             self.info()
             LOGGER.info("")

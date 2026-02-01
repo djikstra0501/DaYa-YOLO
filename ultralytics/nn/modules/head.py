@@ -1378,17 +1378,6 @@ class DualDDetect(nn.Module):
         dbox = self.decode_bboxes(self.dfl_main(box), self.anchors.unsqueeze(0)) * self.strides
         
         y = torch.cat((dbox, cls.sigmoid()), 1)
-        if not self.training and (not hasattr(self, "_dbg_once") or self._dbg_once < 2):
-            with torch.no_grad():
-                cls_sig = cls.sigmoid()
-                LOGGER.warning(
-                    f"[HEAD-DEBUG] y shape={tuple(y.shape)} "
-                    f"cls_logit max={float(cls.max()):.6f} mean={float(cls.mean()):.6f} "
-                    f"cls_prob max={float(cls_sig.max()):.6f} mean={float(cls_sig.mean()):.6f} "
-                    f"box min={float(dbox.min()):.3f} max={float(dbox.max()):.3f}"
-                )
-            self._dbg_once = getattr(self, "_dbg_once", 0) + 1
-
         return y
 
     def bias_init(self):
