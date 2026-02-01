@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.init import constant_, xavier_uniform_
 
-from ultralytics.utils import NOT_MACOS14
+from ultralytics.utils import LOGGER, NOT_MACOS14
 from ultralytics.utils.tal import dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_inference_mode
 
@@ -1325,9 +1325,9 @@ class DualDDetect(nn.Module):
             return (d1, d2)
         
         # INFERENCE: use inference helper
-        y = self._inference(d1, d2, decode_aux=False)
+        y = self._inference(d1)
 
-        return y if self.export else (y, (d1, d2))
+        return y if self.export else (y, d1)
 
     def forward_end2end(self, x: List[torch.Tensor]):
         xd = [t.detach() for t in x]
@@ -1354,29 +1354,42 @@ class DualDDetect(nn.Module):
         y = self.postprocess(y.permute(0, 2, 1), self.max_det, self.nc)
         return y if self.export else (y, {"one2many": main_om + aux_om, "one2one": one2one_main + one2one_aux})
 
-    def _inference(self, d1: List[torch.Tensor], d2: List[torch.Tensor], decode_aux: bool = False) -> torch.Tensor:
+    def _inference(self, d1: List[torch.Tensor]) -> torch.Tensor:
         # d1 and d2 are lists of per-level pred tensors
         
-        if self.stride is None:
-            # bootstrap for anchors/decoding
-            self.stride = torch.tensor([8., 16., 32.], device=d1[0].device)
+        if self.stride is None or len(self.stride) != self.nl:
+            # bootstrap for anchors/decoding (fallback)
+            self.stride = torch.tensor([8.0, 16.0, 32.0], device=d1[0].device, dtype=d1[0].dtype)
+        elif isinstance(self.stride, torch.Tensor):
+            # ensure stride tensor is on the right device/dtype
+            self.stride = self.stride.to(device=d1[0].device, dtype=d1[0].dtype)
+        else:
+            # coerce list/tuple to tensor
+            self.stride = torch.tensor(self.stride, device=d1[0].device, dtype=d1[0].dtype)
 
         shape = d1[0].shape  # BCHW
-        if decode_aux:
-            x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in (d1 + d2)], 2)
-            feats_for_anchors = d1  # anchors/strides derived from main feature maps
-        else:
-            x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1], 2)
-            feats_for_anchors = d1
+        x_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1], 2)
 
         if self.dynamic or self.shape != shape:
-            self.anchors, self.strides = (t.transpose(0, 1) for t in make_anchors(feats_for_anchors, self.stride, 0.5))
+            self.anchors, self.strides = (t.transpose(0, 1) for t in make_anchors(d1, self.stride, 0.5))
             self.shape = shape
 
         box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
         dbox = self.decode_bboxes(self.dfl_main(box), self.anchors.unsqueeze(0)) * self.strides
-        out = torch.cat((dbox, cls.sigmoid()), 1)
-        return out.permute(0, 2, 1).contiguous()
+        
+        y = torch.cat((dbox, cls.sigmoid()), 1)
+        if not self.training and (not hasattr(self, "_dbg_once") or self._dbg_once < 2):
+            with torch.no_grad():
+                cls_sig = cls.sigmoid()
+                LOGGER.warning(
+                    f"[HEAD-DEBUG] y shape={tuple(y.shape)} "
+                    f"cls_logit max={float(cls.max()):.6f} mean={float(cls.mean()):.6f} "
+                    f"cls_prob max={float(cls_sig.max()):.6f} mean={float(cls_sig.mean()):.6f} "
+                    f"box min={float(dbox.min()):.3f} max={float(dbox.max()):.3f}"
+                )
+            self._dbg_once = getattr(self, "_dbg_once", 0) + 1
+
+        return y
 
     def bias_init(self):
         # identical to Detect bias init but for both sets

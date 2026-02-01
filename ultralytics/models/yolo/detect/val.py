@@ -60,6 +60,12 @@ class DetectionValidator(BaseValidator):
         self.iouv = torch.linspace(0.5, 0.95, 10)  # IoU vector for mAP@0.5:0.95
         self.niou = self.iouv.numel()
         self.metrics = DetMetrics()
+        self.args.debug_metrics = True
+        self._dbg_batches = 0
+        self._dbg_hits = 0
+        self._dbg_gt = 0
+        self._dbg_pred = 0
+
 
     def preprocess(self, batch: dict[str, Any]) -> dict[str, Any]:
         """
@@ -116,6 +122,27 @@ class DetectionValidator(BaseValidator):
             (list[dict[str, torch.Tensor]]): Processed predictions after NMS, where each dict contains
                 'bboxes', 'conf', 'cls', and 'extra' tensors.
         """
+        if not hasattr(self, "_dbg_predshape"):
+            self._dbg_predshape = 0
+        if self._dbg_predshape < 3:
+            if isinstance(preds, (tuple, list)):
+                LOGGER.warning(f"[VAL-DEBUG] preds is {type(preds)} len={len(preds)}")
+                p0 = preds[0]
+                LOGGER.warning(f"[VAL-DEBUG] preds[0] type={type(p0)} shape={getattr(p0,'shape',None)}")
+            else:
+                if isinstance(preds, (tuple, list)):
+                    preds = preds[0]
+                LOGGER.warning(f"[VAL-DEBUG] preds type={type(preds)} shape={preds.shape}")
+            self._dbg_predshape += 1
+        
+        # preds may be (y, x) from Detect-style heads
+        if isinstance(preds, (tuple, list)):
+            preds = preds[0]
+            # Some custom heads return BNC; normalize to BCN for NMS if needed.
+            if preds.ndim == 3 and preds.shape[-1] == (self.nc + 4) and preds.shape[1] != (self.nc + 4):
+                preds = preds.permute(0, 2, 1).contiguous()
+                LOGGER.warning(f"[VAL-DEBUG] preds after permute type={type(preds)} shape={preds.shape}")
+
         outputs = nms.non_max_suppression(
             preds,
             self.args.conf,
@@ -127,6 +154,14 @@ class DetectionValidator(BaseValidator):
             end2end=self.end2end,
             rotated=self.args.task == "obb",
         )
+        if getattr(self.args, "debug_metrics", False):
+            # Only print a couple times to avoid spam
+            if not hasattr(self, "_dbg_nms") or self._dbg_nms < 3:
+                total = sum(int(o.shape[0]) for o in outputs)
+                mx = max((float(o[:, 4].max()) for o in outputs if o.numel()), default=0.0)
+                LOGGER.info(f"[NMS-DEBUG] total_det={total} conf_max={mx:.3f} conf_thres={self.args.conf} iou_thres={self.args.iou}")
+                self._dbg_nms = getattr(self, "_dbg_nms", 0) + 1
+
         return [{"bboxes": x[:, :4], "conf": x[:, 4], "cls": x[:, 5], "extra": x[:, 6:]} for x in outputs]
 
     def _prepare_batch(self, si: int, batch: dict[str, Any]) -> dict[str, Any]:
@@ -183,6 +218,35 @@ class DetectionValidator(BaseValidator):
             self.seen += 1
             pbatch = self._prepare_batch(si, batch)
             predn = self._prepare_pred(pred)
+            
+            # --- METRICS DEBUG (cheap sanity check) ---
+            if getattr(self.args, "debug_metrics", False) and self._dbg_batches < 5:
+                gt_n = int(pbatch["cls"].shape[0])
+                pred_n = int(predn["cls"].shape[0])
+
+                self._dbg_gt += gt_n
+                self._dbg_pred += pred_n
+
+                # quick IoU hit check (class-consistent) to prove pipeline is alive
+                hits = 0
+                best_iou_max = 0.0
+                if gt_n and pred_n:
+                    iou = box_iou(pbatch["bboxes"], predn["bboxes"])  # (gt, pred)
+                    best_iou = iou.max(dim=1).values  # best pred per gt
+                    best_iou_max = float(best_iou.max())
+                    # class-consistent match count (rough)
+                    best_j = iou.max(dim=1).indices
+                    cls_ok = predn["cls"][best_j].to(pbatch["cls"].dtype) == pbatch["cls"]
+                    hits = int(((best_iou >= 0.5) & cls_ok).sum())
+                    self._dbg_hits += hits
+
+                LOGGER.info(
+                    f"[METRICS-DEBUG] batch_seen={self.seen} img_idx={si} "
+                    f"GT={gt_n} PRED(afterNMS)={pred_n} bestIoUmax={best_iou_max:.3f} hits@0.5={hits} "
+                    f"conf_max={(float(predn['conf'].max()) if pred_n else 0.0):.3f}"
+                )
+            # --- end debug ---
+
 
             cls = pbatch["cls"].cpu().numpy()
             no_pred = predn["cls"].shape[0] == 0
@@ -219,6 +283,12 @@ class DetectionValidator(BaseValidator):
 
     def finalize_metrics(self) -> None:
         """Set final values for metrics speed and confusion matrix."""
+        if getattr(self.args, "debug_metrics", False):
+            LOGGER.info(
+                f"[METRICS-DEBUG][SUMMARY] total_GT={self._dbg_gt} total_PRED(afterNMS)={self._dbg_pred} "
+                f"total_hits@0.5={self._dbg_hits}"
+            )
+
         if self.args.plots:
             for normalize in True, False:
                 self.confusion_matrix.plot(save_dir=self.save_dir, normalize=normalize, on_plot=self.on_plot)

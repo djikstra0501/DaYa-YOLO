@@ -986,11 +986,14 @@ class DualDDetectLoss:
         self.rank = int(os.environ.get("RANK", "-1"))
 
     def __call__(self, preds, batch):
-        feats = preds[1] if isinstance(preds, tuple) else preds
-        if isinstance(feats, tuple) and len(feats) == 2:
-            main_feats, aux_feats = feats
+        if isinstance(preds, tuple) and len(preds) == 2 and isinstance(preds[0], list):
+            main_feats, aux_feats = preds
         else:
-            main_feats, aux_feats = feats, None
+            feats = preds[1] if isinstance(preds, tuple) else preds
+            if isinstance(feats, tuple) and len(feats) == 2:
+                main_feats, aux_feats = feats
+            else:
+                main_feats, aux_feats = feats, None
 
         loss_main, items_main = self.main(main_feats, batch)
         

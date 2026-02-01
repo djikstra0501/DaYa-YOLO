@@ -323,8 +323,8 @@ class BaseModel(torch.nn.Module):
         self = super()._apply(fn)
         m = self.model[-1]  # Detect()
         if isinstance(
-            m, Detect
-        ):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect, YOLOEDetect, YOLOESegment
+            m, (Detect, DualDDetect)
+        ):  # includes all Detect subclasses + custom DualDDetect
             m.stride = fn(m.stride)
             m.anchors = fn(m.anchors)
             m.strides = fn(m.strides)
@@ -340,8 +340,84 @@ class BaseModel(torch.nn.Module):
         """
         model = weights["model"] if isinstance(weights, dict) else weights  # torchvision models are not dicts
         csd = model.float().state_dict()  # checkpoint state_dict as FP32
-        updated_csd = intersect_dicts(csd, self.state_dict())  # intersect
+        updated_csd = intersect_dicts(csd, self.state_dict())  # intersect by name/shape
+
+        # If target has a leading Identity (raw image tap), shift source layer indices by +1.
+        # This helps transfer backbone weights from base models (e.g. yolo11n) to PGI variants.
+        try:
+            if (
+                hasattr(self, "model")
+                and isinstance(self.model, nn.Sequential)
+                and len(self.model)
+                and isinstance(self.model[0], nn.Identity)
+                and hasattr(model, "model")
+                and len(model.model)
+                and not isinstance(model.model[0], nn.Identity)
+            ):
+                target_sd = self.state_dict()
+
+                # Find source Detect index to avoid shifting head weights into aux blocks.
+                src_detect_idx = None
+                for i in range(len(model.model) - 1, -1, -1):
+                    if isinstance(model.model[i], Detect):
+                        src_detect_idx = i
+                        break
+
+                shifted = {}
+                for k, v in csd.items():
+                    if not k.startswith("model."):
+                        continue
+                    parts = k.split(".")
+                    if len(parts) < 3 or not parts[1].isdigit():
+                        continue
+                    src_idx = int(parts[1])
+                    if src_detect_idx is not None and src_idx == src_detect_idx:
+                        continue
+                    new_k = "model." + str(src_idx + 1) + "." + ".".join(parts[2:])
+                    if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                        shifted[new_k] = v
+
+                # Remove any direct model.* matches (misaligned due to index shift) and replace with shifted keys.
+                updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
+                updated_csd.update(shifted)
+        except Exception:
+            pass
+
         self.load_state_dict(updated_csd, strict=False)  # load
+
+        # If loading Detect -> DualDDetect, copy head weights into main/aux branches safely by shape.
+        try:
+            if (
+                hasattr(self, "model")
+                and len(self.model)
+                and isinstance(self.model[-1], DualDDetect)
+                and hasattr(model, "model")
+                and len(model.model)
+                and isinstance(model.model[-1], Detect)
+            ):
+                src_head = model.model[-1]
+                tgt_head = self.model[-1]
+
+                def _copy_module(dst, src):
+                    sd = intersect_dicts(src.state_dict(), dst.state_dict())
+                    if sd:
+                        dst.load_state_dict(sd, strict=False)
+
+                nl = min(tgt_head.nl, src_head.nl)
+                for i in range(nl):
+                    _copy_module(tgt_head.cv2[i], src_head.cv2[i])
+                    _copy_module(tgt_head.cv3[i], src_head.cv3[i])
+                    # initialize aux branch from main branch for a stronger start
+                    _copy_module(tgt_head.cv4[i], src_head.cv2[i])
+                    _copy_module(tgt_head.cv5[i], src_head.cv3[i])
+
+                # Copy DFL integral weights if available
+                if hasattr(src_head, "dfl") and hasattr(tgt_head, "dfl_main"):
+                    _copy_module(tgt_head.dfl_main, src_head.dfl)
+                if hasattr(src_head, "dfl") and hasattr(tgt_head, "dfl_aux"):
+                    _copy_module(tgt_head.dfl_aux, src_head.dfl)
+        except Exception:
+            pass
         len_updated_csd = len(updated_csd)
         first_conv = "model.0.conv.weight"  # hard-coded to yolo models for now
         # mostly used to boost multi-channel training
@@ -436,7 +512,7 @@ class DetectionModel(BaseModel):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, YOLOEDetect, YOLOESegment
+        if isinstance(m, (Detect, DualDDetect)):  # includes all Detect subclasses like Segment, Pose, OBB, YOLOEDetect, YOLOESegment
             s = 256  # 2x min stride
             m.inplace = self.inplace
 
@@ -444,6 +520,8 @@ class DetectionModel(BaseModel):
                 """Perform a forward pass through the model, handling different Detect subclass types accordingly."""
                 if self.end2end:
                     return self.forward(x)["one2many"]
+                if isinstance(m, DualDDetect):
+                    return self.forward(x)[0]
                 return self.forward(x)[0] if isinstance(m, (Segment, YOLOESegment, Pose, OBB)) else self.forward(x)
 
             self.model.eval()  # Avoid changing batch statistics until training begins
@@ -452,11 +530,13 @@ class DetectionModel(BaseModel):
             self.stride = m.stride
             self.model.train()  # Set model back to training(default) mode
             m.bias_init()  # only run once
+            LOGGER.warning(f"[BIAS-DEBUG] cls bias sample after bias_init = {m.cv3[0][-1].bias[:5].data}")
         else:
             self.stride = torch.Tensor([32])  # default stride for i.e. RTDETR
 
         # Init weights, biases
         initialize_weights(self)
+        LOGGER.warning(f"[BIAS-DEBUG] cls bias sample after init_weights = {m.cv3[0][-1].bias[:5].data}")
         if verbose:
             self.info()
             LOGGER.info("")
