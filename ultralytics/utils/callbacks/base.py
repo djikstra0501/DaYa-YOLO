@@ -24,7 +24,48 @@ def on_train_start(trainer):
 
 def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
-    pass
+    # Update aux loss weight once per epoch if using DualDDetectLoss.
+    try:
+        model = getattr(trainer, "model", None)
+        if model is None:
+            return
+        crit = getattr(model, "criterion", None)
+        if crit is None or crit.__class__.__name__ != "DualDDetectLoss":
+            return
+
+        epoch = int(getattr(trainer, "epoch", 0))
+        if getattr(crit, "_last_aux_epoch", None) == epoch:
+            return
+
+        args = trainer.args
+        schedule = getattr(args, "aux_schedule", "linear")
+        aux_start = float(getattr(args, "aux", 0.5))
+        aux_end = float(getattr(args, "aux_end", 0.0))
+        start_epoch = int(getattr(args, "aux_start_epoch", 0))
+        end_epoch = int(getattr(args, "aux_end_epoch", max(trainer.epochs - 1, 0)))
+        if end_epoch < start_epoch:
+            end_epoch = start_epoch
+
+        if schedule in (None, "none", "constant"):
+            aux = aux_start
+        elif epoch <= start_epoch:
+            aux = aux_start
+        elif epoch >= end_epoch:
+            aux = aux_end
+        else:
+            t = (epoch - start_epoch) / max(end_epoch - start_epoch, 1)
+            if schedule == "cosine":
+                import math
+
+                aux = aux_end + 0.5 * (aux_start - aux_end) * (1.0 + math.cos(math.pi * t))
+            else:  # linear
+                aux = aux_start + (aux_end - aux_start) * t
+
+        crit.aux_weight = aux
+        setattr(args, "aux_current", aux)
+        crit._last_aux_epoch = epoch
+    except Exception:
+        pass
 
 
 def on_train_batch_start(trainer):
