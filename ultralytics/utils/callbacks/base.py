@@ -25,24 +25,25 @@ def on_train_start(trainer):
 def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
     # Update aux loss weight once per epoch if using DualDDetectLoss.
+    # Example usage:
+    # model.train(..., aux=0.5, aux_end=0.0, aux_schedule="linear", aux_start_epoch=0, aux_end_epoch=99)
     try:
         model = getattr(trainer, "model", None)
         if model is None:
             return
         crit = getattr(model, "criterion", None)
-        if crit is None or crit.__class__.__name__ != "DualDDetectLoss":
+        if crit is None or not hasattr(crit, "aux_weight"):
             return
 
-        epoch = int(getattr(trainer, "epoch", 0))
-        if getattr(crit, "_last_aux_epoch", None) == epoch:
-            return
-
+        epoch = trainer.epoch
         args = trainer.args
-        schedule = getattr(args, "aux_schedule", "linear")
-        aux_start = float(getattr(args, "aux", 0.5))
-        aux_end = float(getattr(args, "aux_end", 0.0))
-        start_epoch = int(getattr(args, "aux_start_epoch", 0))
-        end_epoch = int(getattr(args, "aux_end_epoch", max(trainer.epochs - 1, 0)))
+        total_epochs = int(getattr(args, "epochs", 0))
+        
+        schedule = getattr(args, "aux_schedule", "linear")  # "linear" (default), "cosine", "constant"/"none"
+        aux_start = float(getattr(args, "aux", 0.5))  # initial aux weight
+        aux_end = float(getattr(args, "aux_end", 0.0))  # final aux weight
+        start_epoch = int(getattr(args, "aux_start_epoch", 0))  # epoch to start scheduling
+        end_epoch = int(getattr(args, "aux_end_epoch", max(total_epochs - 1, 0)))  # epoch to end scheduling
         if end_epoch < start_epoch:
             end_epoch = start_epoch
 
@@ -64,7 +65,8 @@ def on_train_epoch_start(trainer):
         crit.aux_weight = aux
         setattr(args, "aux_current", aux)
         crit._last_aux_epoch = epoch
-    except Exception:
+    except Exception as e:
+        trainer.logger.warning(f"[AUX] aux scheduling failed: {e}")
         pass
 
 
