@@ -67,7 +67,8 @@ def on_train_epoch_start(trainer):
         crit.aux_weight = aux
         setattr(args, "aux_current", aux)
         crit._last_aux_epoch = epoch
-    except Exception:
+    except Exception as e:
+        trainer.logger.warning(f"[AUX] aux scheduling failed: {e}")
         pass
 
 
