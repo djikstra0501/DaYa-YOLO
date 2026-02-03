@@ -24,6 +24,11 @@ try:
         plots=False,
         iou=0.7,
         conf=0.001,
+        aux = 0.6,
+        aux_end = 0.0,
+        aux_schedule = "linear",
+        aux_start_epoch = 0,
+        aux_end_epoch = 100, 
     )
     print("[TEST] Train OK!")
 except Exception as e:

@@ -43,7 +43,9 @@ def on_train_epoch_start(trainer):
         aux_start = float(getattr(args, "aux", 0.5))  # initial aux weight
         aux_end = float(getattr(args, "aux_end", 0.0))  # final aux weight
         start_epoch = int(getattr(args, "aux_start_epoch", 0))  # epoch to start scheduling
-        end_epoch = int(getattr(args, "aux_end_epoch", max(total_epochs - 1, 0)))  # epoch to end scheduling
+        end_epoch = int(getattr(args, "aux_end_epoch", 0))  # epoch to end scheduling (0 = auto last)
+        if end_epoch <= 0:
+            end_epoch = max(total_epochs - 1, 0)
         if end_epoch < start_epoch:
             end_epoch = start_epoch
 
@@ -65,8 +67,7 @@ def on_train_epoch_start(trainer):
         crit.aux_weight = aux
         setattr(args, "aux_current", aux)
         crit._last_aux_epoch = epoch
-    except Exception as e:
-        trainer.logger.warning(f"[AUX] aux scheduling failed: {e}")
+    except Exception:
         pass
 
 
