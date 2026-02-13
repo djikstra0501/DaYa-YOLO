@@ -383,6 +383,59 @@ class BaseModel(torch.nn.Module):
                 updated_csd.update(shifted)
         except Exception:
             pass
+        # Custom index alignment when target inserts SCM blocks or replaces C3k2 with CCS.
+        try:
+            if (
+                hasattr(self, "model")
+                and isinstance(self.model, nn.Sequential)
+                and hasattr(model, "model")
+                and isinstance(model.model, nn.Sequential)
+            ):
+                tgt_layers = list(self.model)
+                src_layers = list(model.model)
+                has_scm_tgt = any(isinstance(m, SCM) for m in tgt_layers)
+                has_scm_src = any(isinstance(m, SCM) for m in src_layers)
+                has_ccs_tgt = any(m.__class__.__name__ == "CCS" for m in tgt_layers)
+                has_ccs_src = any(m.__class__.__name__ == "CCS" for m in src_layers)
+
+                if (has_scm_tgt or has_ccs_tgt) and not (has_scm_src or has_ccs_src):
+                    index_map = {}
+                    si = 0
+                    ti = 0
+                    while si < len(src_layers) and ti < len(tgt_layers):
+                        tgt = tgt_layers[ti]
+                        # Extra blocks in target: skip SCM and leading Identity
+                        if isinstance(tgt, (SCM, nn.Identity)):
+                            ti += 1
+                            continue
+                        # CCS replaces C3k2: consume source index but skip loading its weights
+                        if tgt.__class__.__name__ == "CCS":
+                            si += 1
+                            ti += 1
+                            continue
+                        index_map[si] = ti
+                        si += 1
+                        ti += 1
+
+                    target_sd = self.state_dict()
+                    shifted = {}
+                    for k, v in csd.items():
+                        if not k.startswith("model."):
+                            continue
+                        parts = k.split(".")
+                        if len(parts) < 3 or not parts[1].isdigit():
+                            continue
+                        src_idx = int(parts[1])
+                        if src_idx not in index_map:
+                            continue
+                        new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
+                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                            shifted[new_k] = v
+
+                    updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
+                    updated_csd.update(shifted)
+        except Exception:
+            pass
 
         self.load_state_dict(updated_csd, strict=False)  # load
 
