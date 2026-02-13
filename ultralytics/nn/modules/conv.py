@@ -28,6 +28,7 @@ __all__ = (
     "MCBAMChannelAttention",
     "MCBAM",
     "SCM",
+    "CCS",
     "GSConv",
     "GnConv",
     "SpatialAttention2",
@@ -919,6 +920,43 @@ class SCM(nn.Module):
         Output:          x' = x * M
     """
 
+    def __init__(self, c1, reduction=4):
+        """
+        Initialize SCM block.
+
+        Args:
+            c1 (int): Number of input channels.
+            reduction (int, optional): Channel reduction ratio for the MLP. Defaults to 4.
+        """
+        super().__init__()
+        hidden = max(1, c1 // reduction)
+
+        # Spatial branch: depthwise 3x3 -> pointwise 1x1 -> sigmoid
+        self.spatial = nn.Sequential(
+            nn.Conv2d(c1, c1, 3, 1, 1, groups=c1, bias=False),
+            nn.Conv2d(c1, 1, 1, 1, 0, bias=False),
+            nn.Sigmoid(),
+        )
+
+        # Channel branch: GAP -> MLP -> sigmoid
+        self.channel = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, hidden, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(hidden, c1, 1, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        """Apply SCM modulation to input tensor."""
+        s = self.spatial(x)  # (B, 1, H, W)
+        c = self.channel(x)  # (B, C, 1, 1)
+
+        m = (1.0 + s) * (1.0 + c)
+        return x * m
+
+class CCS(nn.Module):
+    """Combined C3k2 and SCM block."""
     def __init__(self, c1, reduction=4):
         """
         Initialize SCM block.

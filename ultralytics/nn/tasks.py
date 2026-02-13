@@ -86,6 +86,7 @@ from ultralytics.nn.modules import (
     GnConv,
     CBAM,
     SCM,
+    CCS,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -395,8 +396,8 @@ class BaseModel(torch.nn.Module):
                 src_layers = list(model.model)
                 has_scm_tgt = any(isinstance(m, SCM) for m in tgt_layers)
                 has_scm_src = any(isinstance(m, SCM) for m in src_layers)
-                has_ccs_tgt = any(m.__class__.__name__ == "CCS" for m in tgt_layers)
-                has_ccs_src = any(m.__class__.__name__ == "CCS" for m in src_layers)
+                has_ccs_tgt = any(isinstance(m, CCS) for m in tgt_layers)
+                has_ccs_src = any(isinstance(m, CCS) for m in src_layers)
 
                 if (has_scm_tgt or has_ccs_tgt) and not (has_scm_src or has_ccs_src):
                     index_map = {}
@@ -1782,6 +1783,7 @@ def parse_model(d, ch, verbose=True):
             HorBlock,
             GSConv,
             SCM,
+            CCS,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments

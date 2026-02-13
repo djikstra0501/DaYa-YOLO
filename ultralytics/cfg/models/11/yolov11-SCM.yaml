@@ -23,7 +23,7 @@ backbone:
   - [-1, 1, Conv, [256, 3, 2]] # 3-P3/8
   - [-1, 2, C3k2, [512, False, 0.25]]
   - [-1, 1, SCM, [512]]
-  - [-1, 1, Conv, [512, 3, 2]] # 6-P4/16
+  - [-1, 1, Conv, [512, 3, 2]] # 5-P4/16
   - [-1, 2, C3k2, [512, True]]
   - [-1, 1, Conv, [1024, 3, 2]] # 8-P5/32
   - [-1, 2, C3k2, [1024, True]]
@@ -33,7 +33,7 @@ backbone:
 # YOLO11n head
 head:
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
-  - [[-1, 7], 1, Concat, [1]] # cat backbone P4
+  - [[-1, 7], 1, Concat, [1]] # cat backbone P4 
   - [-1, 2, C3k2, [512, False]] # 14
 
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
@@ -48,4 +48,4 @@ head:
   - [[-1, 11], 1, Concat, [1]] # cat head P5
   - [-1, 2, C3k2, [1024, True]] # 23 (P5/32-large)
 
-  - [[17, 18, 23], 1, Detect, [nc]] # Detect(P3, P4, P5)
+  - [[17, 20, 23], 1, Detect, [nc]] # Detect(P3, P4, P5)
