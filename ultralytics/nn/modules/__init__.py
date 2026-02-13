@@ -90,6 +90,7 @@ from .conv import (
     GSConv,
     GnConv,
     SpatialAttention2,
+    SCM,
 )
 from .head import (
     OBB,
@@ -211,4 +212,5 @@ __all__ = (
     "GSConv",
     "GnConv",
     "SpatialAttention2",
+    "SCM",
 )

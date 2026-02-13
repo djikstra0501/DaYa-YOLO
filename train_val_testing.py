@@ -2,7 +2,7 @@
 import traceback
 
 # Load your custom model config
-model = YOLO("ultralytics/cfg/models/11/yolo11n.yaml")
+model = YOLO("ultralytics/cfg/models/11/yolov11-SCM.yaml")
 
 # --- TRAIN TEST ---
 try:
@@ -13,17 +13,12 @@ try:
         imgsz=256,           # smaller image size
         device="cpu",        # keep it light
         pretrained="yolo11n.pt",  # warm start from base weights
-        optimizer="SGD",
-        lr0=0.01,
-        momentum=0.937,
         save=False,          # don't save weights
         save_period=-1,      # never save during training
         project=None,        # no folder creation
         name=None,           # no run name
         exist_ok=True,
         plots=False,
-        iou=0.7,
-        conf=0.001,
     )
     print("[TEST] Train OK!")
 except Exception as e:
@@ -40,8 +35,6 @@ try:
         device="cpu",
         save=False,          # don't save results
         plots=False,         # no plots
-        iou=0.7,
-        conf=0.001,
     )
     print("[TEST] Val OK!")
     print(metrics)
