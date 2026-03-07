@@ -911,7 +911,7 @@ class MCBAM(nn.Module):
         return x
 
 class SCM(nn.Module):
-    """Spatial-Channel Modulation (SCM) block.
+    """Feature Consistency Modulation (FCM) block.
 
     Flow:
         Spatial branch:  S = sigmoid(Conv1x1(DWConv3x3(x))) -> (B, 1, H, W)
@@ -922,7 +922,7 @@ class SCM(nn.Module):
 
     def __init__(self, c1, reduction=4):
         """
-        Initialize SCM block.
+        Initialize FCM block.
 
         Args:
             c1 (int): Number of input channels.
@@ -948,7 +948,7 @@ class SCM(nn.Module):
         )
 
     def forward(self, x):
-        """Apply SCM modulation to input tensor."""
+        """Apply FCM modulation to input tensor."""
         s = self.spatial(x)  # (B, 1, H, W)
         c = self.channel(x)  # (B, C, 1, 1)
 
@@ -1160,3 +1160,4 @@ class GnConv(nn.Module):
         x = self.proj_out(x)
         
         return x    
+
