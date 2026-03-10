@@ -2,7 +2,7 @@
 import traceback
 
 # Load your custom model config
-model = YOLO("ultralytics/cfg/models/11/yolov11-SCM.yaml")
+model = YOLO("ultralytics/cfg/models/11/yolov11-eca-sam.yaml")
 
 # --- TRAIN TEST ---
 try:
