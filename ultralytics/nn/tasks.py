@@ -388,98 +388,127 @@ class BaseModel(torch.nn.Module):
             pass
         
         # Custom Loader for Insertion, Replacement, and Wrapper cases when loading between models with architectural differences (e.g. YOLOv11 ECA/SAM variants).
-        try:
-            if (
-                hasattr(self, "model")
-                and isinstance(self.model, nn.Sequential)
-                and hasattr(model, "model")
-                and isinstance(model.model, nn.Sequential)
-            ):
-                tgt_layers = list(self.model)
-                src_layers = list(model.model)
+        use_custom_loader = True
+        
+        def same_architecture(m1, m2):
+            for l1, l2 in zip(m1, m2):
+                if type(l1) != type(l2):
+                    return False
+            return True
 
-                index_map = {}          # normal mapping
-                wrapper_map = {}        # special: map src -> tgt.block
+        # -----------------------------
+        # Case 1: use CURRENT runtime args (what user passed NOW)
+        # -----------------------------
+        resume_flag = False
 
-                si = 0
-                ti = 0
+        if hasattr(model, "trainer") and hasattr(model.trainer, "args"):
+            resume_flag = getattr(model.trainer.args, "resume", False)
 
-                while si < len(src_layers) and ti < len(tgt_layers):
-                    tgt = tgt_layers[ti]
-                    src = src_layers[si]
+        if resume_flag:
+            use_custom_loader = False
+            print(f"{emojis('⚠️ ')} Resuming training with --resume, skipping custom loader to preserve optimizer and training state.")
 
-                    tgt_name = tgt.__class__.__name__
-                    src_name = src.__class__.__name__
+        # Case 2: same architecture → skip
+        elif same_architecture(self.model, model.model):
+            use_custom_loader = False
+            print("Same Exact Architecture detected, skipping custom loader.")
+            
+        elif not resume_flag or not same_architecture(self.model, model.model):
+            print(f"{emojis('⚠️ ')} Resume Flag false or Architectural differences detected. Using custom loader.")
+            
+        if use_custom_loader:
+            try:
+                if (
+                    hasattr(self, "model")
+                    and isinstance(self.model, nn.Sequential)
+                    and hasattr(model, "model")
+                    and isinstance(model.model, nn.Sequential)
+                ):
+                    tgt_layers = list(self.model)
+                    src_layers = list(model.model)
 
-                    # -----------------------------
-                    # 1. INSERTION (ECA / SA)
-                    # -----------------------------
-                    if isinstance(tgt, ()):
-                        ti += 1
-                        continue
+                    index_map = {}          # normal mapping
+                    wrapper_map = {}        # special: map src -> tgt.block
 
-                    # -----------------------------
-                    # 2. REPLACEMENT (C3k2 -> ECA)
-                    # -----------------------------
-                    if isinstance(tgt, (ECA)) and src_name == "C3k2":
+                    si = 0
+                    ti = 0
+
+                    while si < len(src_layers) and ti < len(tgt_layers):
+                        tgt = tgt_layers[ti]
+                        src = src_layers[si]
+
+                        tgt_name = tgt.__class__.__name__
+                        src_name = src.__class__.__name__
+
+                        # -----------------------------
+                        # 1. INSERTION (ECA / SA)
+                        # -----------------------------
+                        if isinstance(tgt, ()):
+                            ti += 1
+                            continue
+
+                        # -----------------------------
+                        # 2. REPLACEMENT (C3k2 -> ECA)
+                        # -----------------------------
+                        if isinstance(tgt, (ECA)) and src_name == "C3k2":
+                            si += 1
+                            ti += 1
+                            continue
+
+                        # -----------------------------
+                        # 3. WRAPPER (C3k2Spa / C3k2Cha)
+                        # -----------------------------
+                        if tgt_name in {"C3k2Spa", "C3k2Cha"} and src_name == "C3k2":
+                            wrapper_map[si] = ti
+                            si += 1
+                            ti += 1
+                            continue
+
+                        # -----------------------------
+                        # NORMAL ALIGN
+                        # -----------------------------
+                        index_map[si] = ti
                         si += 1
                         ti += 1
-                        continue
 
-                    # -----------------------------
-                    # 3. WRAPPER (C3k2Spa / C3k2Cha)
-                    # -----------------------------
-                    if tgt_name in {"C3k2Spa", "C3k2Cha"} and src_name == "C3k2":
-                        wrapper_map[si] = ti
-                        si += 1
-                        ti += 1
-                        continue
+                    target_sd = self.state_dict()
+                    shifted = {}
 
-                    # -----------------------------
-                    # NORMAL ALIGN
-                    # -----------------------------
-                    index_map[si] = ti
-                    si += 1
-                    ti += 1
+                    for k, v in csd.items():
+                        if not k.startswith("model."):
+                            continue
 
-                target_sd = self.state_dict()
-                shifted = {}
+                        parts = k.split(".")
+                        if len(parts) < 3 or not parts[1].isdigit():
+                            continue
 
-                for k, v in csd.items():
-                    if not k.startswith("model."):
-                        continue
+                        src_idx = int(parts[1])
 
-                    parts = k.split(".")
-                    if len(parts) < 3 or not parts[1].isdigit():
-                        continue
+                        # -----------------------------
+                        # NORMAL MAPPING
+                        # -----------------------------
+                        if src_idx in index_map:
+                            new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
+                            if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                                shifted[new_k] = v
 
-                    src_idx = int(parts[1])
+                        # -----------------------------
+                        # WRAPPER PARTIAL LOAD
+                        # -----------------------------
+                        elif src_idx in wrapper_map:
+                            tgt_idx = wrapper_map[src_idx]
 
-                    # -----------------------------
-                    # NORMAL MAPPING
-                    # -----------------------------
-                    if src_idx in index_map:
-                        new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
-                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
-                            shifted[new_k] = v
+                            # redirect to .block
+                            new_k = "model." + str(tgt_idx) + ".block." + ".".join(parts[2:])
 
-                    # -----------------------------
-                    # WRAPPER PARTIAL LOAD
-                    # -----------------------------
-                    elif src_idx in wrapper_map:
-                        tgt_idx = wrapper_map[src_idx]
+                            if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                                shifted[new_k] = v
 
-                        # redirect to .block
-                        new_k = "model." + str(tgt_idx) + ".block." + ".".join(parts[2:])
+                    updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
+                    updated_csd.update(shifted)
 
-                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
-                            shifted[new_k] = v
-
-                updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
-                updated_csd.update(shifted)
-
-        except Exception:
-            pass
+            except Exception as e:
+                print(f"[Custom Loader Error] {e}")
 
         # If loading Detect -> DualDDetect, copy head weights into main/aux branches safely by shape.
         try:
