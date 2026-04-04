@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, GSConv, GnConv, autopad
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, GSConv, GnConv, autopad, SpatialAttention, ECA
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -61,6 +61,8 @@ __all__ = (
     "LNorm2d",
     "DropPath",
     "HorBlock",
+    "C3k2Spa",
+    "C3k2Cha",
 )
 
 
@@ -2432,3 +2434,24 @@ class HorBlock(nn.Module):
         x = x + shortcut
         
         return x
+
+class C3k2Spa(nn.Module):
+    """C3k2Spa: C3k2 Block with Spatial Awareness"""
+    def __init__(self, c1, c2, n=1, c3k=False, e=0.5, g=1, shortcut=True, kernel_size=7):
+        super().__init__()
+        self.attention = SpatialAttention(kernel_size=kernel_size)
+        self.c3k2 = C3k2(c1, c2, n, c3k, e, g, shortcut)
+
+    def forward(self, x):
+        return self.c3k2(self.attention(x))
+    
+class C3k2Cha(nn.Module):
+    """C3k2Cha: C3k2 Block with Channel Awareness"""
+    def __init__(self, c1, c2, n=1, c3k=False, e=0.5, g=1, shortcut=True, gamma=2, b=1):
+        super().__init__()
+        self.attention = ECA(gamma=gamma, b=b)
+        self.c3k2 = C3k2(c1, c2, n, c3k, e, g, shortcut)
+
+    def forward(self, x):
+        return self.c3k2(self.attention(x))
+

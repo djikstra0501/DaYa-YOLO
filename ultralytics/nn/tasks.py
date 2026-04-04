@@ -87,6 +87,8 @@ from ultralytics.nn.modules import (
     CBAM,
     SCM,
     CCS,
+    C3k2Spa,
+    C3k2Cha,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -394,47 +396,57 @@ class BaseModel(torch.nn.Module):
             ):
                 tgt_layers = list(self.model)
                 src_layers = list(model.model)
-                has_scm_tgt = any(isinstance(m, SCM) for m in tgt_layers)
-                has_scm_src = any(isinstance(m, SCM) for m in src_layers)
-                has_ccs_tgt = any(isinstance(m, CCS) for m in tgt_layers)
-                has_ccs_src = any(isinstance(m, CCS) for m in src_layers)
 
-                if (has_scm_tgt or has_ccs_tgt) and not (has_scm_src or has_ccs_src):
-                    index_map = {}
-                    si = 0
-                    ti = 0
-                    while si < len(src_layers) and ti < len(tgt_layers):
-                        tgt = tgt_layers[ti]
-                        # Extra blocks in target: skip SCM and leading Identity
-                        if isinstance(tgt, (SCM, nn.Identity)):
-                            ti += 1
-                            continue
-                        # CCS replaces C3k2: consume source index but skip loading its weights
-                        if tgt.__class__.__name__ == "CCS":
-                            si += 1
-                            ti += 1
-                            continue
-                        index_map[si] = ti
-                        si += 1
+                # modules to SKIP in target (no pretrained equivalent)
+                SKIP_TGT = (ECA, SpatialAttention, SCM, CCS)  # custom modules without pretrained weights
+                SKIP_TGT_NAMES = {"C3k2Cha", "C3k2Spa"}  # custom wrappers
+
+                index_map = {}
+                si = 0  # source index
+                ti = 0  # target index
+
+                while si < len(src_layers) and ti < len(tgt_layers):
+                    tgt = tgt_layers[ti]
+
+                    # --- SKIP: inserted modules in target ---
+                    if isinstance(tgt, SKIP_TGT) or tgt.__class__.__name__ in SKIP_TGT_NAMES:
                         ti += 1
+                        continue
 
-                    target_sd = self.state_dict()
-                    shifted = {}
-                    for k, v in csd.items():
-                        if not k.startswith("model."):
-                            continue
-                        parts = k.split(".")
-                        if len(parts) < 3 or not parts[1].isdigit():
-                            continue
-                        src_idx = int(parts[1])
-                        if src_idx not in index_map:
-                            continue
-                        new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
-                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
-                            shifted[new_k] = v
+                    # --- SKIP: identity (existing logic) ---
+                    if isinstance(tgt, nn.Identity):
+                        ti += 1
+                        continue
 
-                    updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
-                    updated_csd.update(shifted)
+                    # --- NORMAL ALIGN ---
+                    index_map[si] = ti
+                    si += 1
+                    ti += 1
+
+                target_sd = self.state_dict()
+                shifted = {}
+
+                for k, v in csd.items():
+                    if not k.startswith("model."):
+                        continue
+
+                    parts = k.split(".")
+                    if len(parts) < 3 or not parts[1].isdigit():
+                        continue
+
+                    src_idx = int(parts[1])
+
+                    if src_idx not in index_map:
+                        continue
+
+                    new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
+
+                    if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                        shifted[new_k] = v
+
+                updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
+                updated_csd.update(shifted)
+
         except Exception:
             pass
 
@@ -1784,6 +1796,8 @@ def parse_model(d, ch, verbose=True):
             GSConv,
             SCM,
             CCS,
+            C3k2Spa,
+            C3k2Cha,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments

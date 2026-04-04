@@ -52,7 +52,7 @@ for img in cocoGt.dataset["images"]:
 
         predictions.append({
             "image_id": img["id"],
-            "category_id": obj.category.id,
+            "category_id": obj.category.id + 1,
             "bbox": bbox,
             "score": obj.score.value
         })

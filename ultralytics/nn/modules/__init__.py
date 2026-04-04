@@ -68,6 +68,8 @@ from .block import (
     LNorm2d,
     DropPath,
     HorBlock,
+    C3k2Spa,
+    C3k2Cha,
 )
 from .conv import (
     CBAM,
@@ -215,4 +217,6 @@ __all__ = (
     "SpatialAttention2",
     "SCM",
     "CCS",
+    "C3k2Spa",
+    "C3k2Cha",
 )

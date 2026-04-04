@@ -752,12 +752,13 @@ class ECA(nn.Module):
     """
 
     def __init__(self, gamma=2, b=1):
-        super(ECA, self).__init__()
+        super().__init__()
         self.gamma = gamma
         self.b = b
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.sigmoid = nn.Sigmoid()
-        # Conv1d is built dynamically in forward() since kernel size depends on C
+
+        self.conv = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass for ECA block.
@@ -769,27 +770,22 @@ class ECA(nn.Module):
             torch.Tensor: Output tensor of shape (N, C, H, W) with
             channel-wise attention applied.
         """
-        N, C, H, W = x.size()
+        N, C, _, _ = x.size()
 
-        # Dynamic kernel size calculation
-        t = int(abs((math.log(C, 2) + self.b) / self.gamma))
-        k = t if t % 2 else t + 1
+        if self.conv is None:
+            t = int(abs((math.log2(C) + self.b) / self.gamma))
+            k = t if t % 2 else t + 1
+            k = max(k, 3)
 
-        # Build 1D convolution dynamically
-        conv = nn.Conv1d(1, 1, kernel_size=k, padding=k // 2, bias=False).to(x.device)
+            self.conv = nn.Conv1d(1, 1, k, padding=k//2, bias=False).to(x.device)
 
-        # Global average pooling → [N, C, 1, 1]
         y = self.avg_pool(x)
-
-        # Apply 1D conv along channel dimension
-        y = conv(y.squeeze(-1).transpose(-1, -2))
-        y = y.transpose(-1, -2).unsqueeze(-1)  # back to [N, C, 1, 1]
-
-        # Attention weights
+        y = y.squeeze(-1).transpose(-1, -2)
+        y = self.conv(y)
+        y = y.transpose(-1, -2).unsqueeze(-1)
         y = self.sigmoid(y)
 
-        # Reweight input
-        return x * y.expand_as(x)
+        return x * y
 
 class MCBAMChannelAttention(nn.Module):
     """Multi-branch Channel Attention module (M-CBAM).
