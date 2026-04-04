@@ -780,9 +780,9 @@ class ECA(nn.Module):
             self.conv = nn.Conv1d(1, 1, k, padding=k//2, bias=False).to(x.device)
 
         y = self.avg_pool(x)
-        y = y.squeeze(-1).transpose(-1, -2)
+        y = y.squeeze(-1).transpose(-1, -2).contiguous()  # (N, 1, C)
         y = self.conv(y)
-        y = y.transpose(-1, -2).unsqueeze(-1)
+        y = y.transpose(-1, -2).unsqueeze(-1).contiguous()  # (N, C, 1, 1)
         y = self.sigmoid(y)
 
         return x * y
