@@ -386,7 +386,8 @@ class BaseModel(torch.nn.Module):
                 updated_csd.update(shifted)
         except Exception:
             pass
-        # Custom index alignment when target inserts SCM blocks or replaces C3k2 with CCS.
+        
+        # Custom Loader for Insertion, Replacement, and Wrapper cases when loading between models with architectural differences (e.g. YOLOv11 ECA/SAM variants).
         try:
             if (
                 hasattr(self, "model")
@@ -397,28 +398,46 @@ class BaseModel(torch.nn.Module):
                 tgt_layers = list(self.model)
                 src_layers = list(model.model)
 
-                # modules to SKIP in target (no pretrained equivalent)
-                SKIP_TGT = (ECA, SpatialAttention, SCM, CCS)  # custom modules without pretrained weights
-                SKIP_TGT_NAMES = {"C3k2Cha", "C3k2Spa"}  # custom wrappers
+                index_map = {}          # normal mapping
+                wrapper_map = {}        # special: map src -> tgt.block
 
-                index_map = {}
-                si = 0  # source index
-                ti = 0  # target index
+                si = 0
+                ti = 0
 
                 while si < len(src_layers) and ti < len(tgt_layers):
                     tgt = tgt_layers[ti]
+                    src = src_layers[si]
 
-                    # --- SKIP: inserted modules in target ---
-                    if isinstance(tgt, SKIP_TGT) or tgt.__class__.__name__ in SKIP_TGT_NAMES:
+                    tgt_name = tgt.__class__.__name__
+                    src_name = src.__class__.__name__
+
+                    # -----------------------------
+                    # 1. INSERTION (ECA / SA)
+                    # -----------------------------
+                    if isinstance(tgt, ()):
                         ti += 1
                         continue
 
-                    # --- SKIP: identity (existing logic) ---
-                    if isinstance(tgt, nn.Identity):
+                    # -----------------------------
+                    # 2. REPLACEMENT (C3k2 -> ECA)
+                    # -----------------------------
+                    if isinstance(tgt, (ECA)) and src_name == "C3k2":
+                        si += 1
                         ti += 1
                         continue
 
-                    # --- NORMAL ALIGN ---
+                    # -----------------------------
+                    # 3. WRAPPER (C3k2Spa / C3k2Cha)
+                    # -----------------------------
+                    if tgt_name in {"C3k2Spa", "C3k2Cha"} and src_name == "C3k2":
+                        wrapper_map[si] = ti
+                        si += 1
+                        ti += 1
+                        continue
+
+                    # -----------------------------
+                    # NORMAL ALIGN
+                    # -----------------------------
                     index_map[si] = ti
                     si += 1
                     ti += 1
@@ -436,21 +455,31 @@ class BaseModel(torch.nn.Module):
 
                     src_idx = int(parts[1])
 
-                    if src_idx not in index_map:
-                        continue
+                    # -----------------------------
+                    # NORMAL MAPPING
+                    # -----------------------------
+                    if src_idx in index_map:
+                        new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
+                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                            shifted[new_k] = v
 
-                    new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
+                    # -----------------------------
+                    # WRAPPER PARTIAL LOAD
+                    # -----------------------------
+                    elif src_idx in wrapper_map:
+                        tgt_idx = wrapper_map[src_idx]
 
-                    if new_k in target_sd and target_sd[new_k].shape == v.shape:
-                        shifted[new_k] = v
+                        # redirect to .block
+                        new_k = "model." + str(tgt_idx) + ".block." + ".".join(parts[2:])
+
+                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                            shifted[new_k] = v
 
                 updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
                 updated_csd.update(shifted)
 
         except Exception:
             pass
-
-        self.load_state_dict(updated_csd, strict=False)  # load
 
         # If loading Detect -> DualDDetect, copy head weights into main/aux branches safely by shape.
         try:
