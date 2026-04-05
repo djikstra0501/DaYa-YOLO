@@ -402,12 +402,18 @@ class BaseModel(torch.nn.Module):
         resume_flag = False
 
         if hasattr(model, "trainer") and hasattr(model.trainer, "args"):
-            resume_flag = getattr(model.trainer.args, "resume", False)
+            resume_arg = getattr(model.trainer.args, "resume", False)
+
+            # handle Ultralytics behavior
+            if isinstance(resume_arg, str):
+                resume_flag = True
+            elif isinstance(resume_arg, bool):
+                resume_flag = resume_arg
 
         if resume_flag:
             use_custom_loader = False
-            print(f"{emojis('⚠️ ')} Resuming training with --resume, skipping custom loader to preserve optimizer and training state.")
-
+            print("Resuming training, skipping custom loader.")
+            
         # Case 2: same architecture → skip
         elif same_architecture(self.model, model.model):
             use_custom_loader = False
