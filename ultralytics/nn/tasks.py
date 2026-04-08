@@ -421,7 +421,8 @@ class BaseModel(torch.nn.Module):
             
         elif not resume_flag or not same_architecture(self.model, model.model):
             print(f"{emojis('⚠️ ')} Resume Flag false or Architectural differences detected. Using custom loader.")
-            
+         
+        # Custom Loader Main Logic   
         if use_custom_loader:
             try:
                 if (
