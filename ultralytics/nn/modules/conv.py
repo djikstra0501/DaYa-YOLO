@@ -32,6 +32,7 @@ __all__ = (
     "GSConv",
     "GnConv",
     "SpatialAttention2",
+    "SpectralFeatureEncoder",
 )
 
 
@@ -1157,3 +1158,25 @@ class GnConv(nn.Module):
         
         return x    
 
+class SpectralFeatureEncoder(nn.Module):
+    """
+    Learnable Spectral Encoder for Rice Pest Detection.
+    Isolates chromaticity from luminance using a 1x1 convolution.
+    Initialized with CIE XYZ standard matrix weights.
+    """
+    def __init__(self, c1=3, c2=2): 
+        super().__init__()
+        self.encoder = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0, bias=False)
+        
+        # Professional Initialization: CIE XYZ Matrix
+        # [0.4124, 0.3576, 0.1805] -> X
+        # [0.2126, 0.7152, 0.0722] -> Y
+        with torch.no_grad():
+            xyz_weights = torch.tensor([
+                [0.4124, 0.3576, 0.1805],
+                [0.2126, 0.7152, 0.0722]
+            ])
+            self.encoder.weight.copy_(xyz_weights.view(c2, c1, 1, 1))
+
+    def forward(self, x):
+        return self.encoder(x)

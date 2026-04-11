@@ -94,6 +94,7 @@ from .conv import (
     SpatialAttention2,
     SCM,
     CCS,
+    SpectralFeatureEncoder,
 )
 from .head import (
     OBB,
@@ -219,4 +220,5 @@ __all__ = (
     "CCS",
     "C3k2Spa",
     "C3k2Cha",
+    "SpectralFeatureEncoder",
 )

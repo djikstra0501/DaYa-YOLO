@@ -89,6 +89,7 @@ from ultralytics.nn.modules import (
     CCS,
     C3k2Spa,
     C3k2Cha,
+    SpectralFeatureEncoder,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -336,20 +337,40 @@ class BaseModel(torch.nn.Module):
 
     def load(self, weights, verbose=True):
         """
-        Load weights into the model.
-
-        Args:
-            weights (dict | torch.nn.Module): The pre-trained weights to be loaded.
-            verbose (bool, optional): Whether to log the transfer progress.
+        Load weights into the model with dynamic architecture routing.
+        Normal Loader: If the architecture of the weights matches the model, it loads directly.
+        Custom Loader: If the architecture differs, it applies a custom loading strategy to map weights based on layer types and positions.
         """
-        model = weights["model"] if isinstance(weights, dict) else weights  # torchvision models are not dicts
-        csd = model.float().state_dict()  # checkpoint state_dict as FP32
-        updated_csd = intersect_dicts(csd, self.state_dict())  # intersect by name/shape
+        model = weights["model"] if isinstance(weights, dict) else weights
+        csd = model.float().state_dict()
+        updated_csd = intersect_dicts(csd, self.state_dict())
 
-        # If target has a leading Identity (raw image tap), shift source layer indices by +1.
-        # This helps transfer backbone weights from base models (e.g. yolo11n) to PGI variants.
-        try:
-            if (
+        # =========================================================
+        # CONDITION FUNCTIONS
+        # =========================================================
+        def is_resume():
+            if hasattr(model, "trainer") and hasattr(model.trainer, "args"):
+                return bool(getattr(model.trainer.args, "resume", False))
+            return False
+
+        def is_same_architecture():
+            if not (hasattr(self, "model") and hasattr(model, "model")):
+                return False
+            for l1, l2 in zip(self.model, model.model):
+                if type(l1) != type(l2):
+                    return False
+            return True
+
+        def is_daya_architecture():
+            """Detects if the model is our DaYa-YOLO (Chrominance-Structural) variant."""
+            if hasattr(self, "model"):
+                for layer in self.model:
+                    if layer.__class__.__name__ == "SpectralFeatureEncoder":
+                        return True
+            return False
+
+        def has_identity_shift_case():
+            return (
                 hasattr(self, "model")
                 and isinstance(self.model, nn.Sequential)
                 and len(self.model)
@@ -357,10 +378,65 @@ class BaseModel(torch.nn.Module):
                 and hasattr(model, "model")
                 and len(model.model)
                 and not isinstance(model.model[0], nn.Identity)
-            ):
-                target_sd = self.state_dict()
+            )
 
-                # Find source Detect index to avoid shifting head weights into aux blocks.
+        def is_dual_detect_case():
+            return (
+                hasattr(self, "model")
+                and len(self.model)
+                and isinstance(self.model[-1], DualDDetect)
+                and hasattr(model, "model")
+                and len(model.model)
+                and isinstance(model.model[-1], Detect)
+            )
+
+        # =========================================================
+        # ACTION FUNCTIONS
+        # =========================================================
+        def apply_daya_loader(updated_csd):
+            """Dedicated hard-coded mapping for DaYa-YOLO."""
+            target_sd = self.state_dict()
+            shifted_weights = {}
+
+            def get_daya_idx(src_idx):
+                if src_idx <= 10: return src_idx + 1      # Main Backbone (+ Identity)
+                elif src_idx >= 11: return src_idx + 7    # Head (+ Identity & 6 Aux layers)
+                return None
+
+            for k, v in csd.items():
+                if not k.startswith("model."):
+                    continue
+                parts = k.split(".")
+                if len(parts) < 3 or not parts[1].isdigit():
+                    continue
+
+                src_idx = int(parts[1])
+                tgt_idx = get_daya_idx(src_idx)
+
+                if tgt_idx is not None:
+                    new_k = f"model.{tgt_idx}.{'.'.join(parts[2:])}"
+                    if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                        shifted_weights[new_k] = v
+
+            # First Conv Alignment
+            first_conv_src = "model.0.conv.weight"
+            first_conv_tgt = "model.1.conv.weight"
+            if first_conv_tgt not in shifted_weights and first_conv_tgt in target_sd and first_conv_src in csd:
+                c1, c2, h, w = target_sd[first_conv_tgt].shape
+                cc1, cc2, ch, cw = csd[first_conv_src].shape
+                if ch == h and cw == w:
+                    c1, c2 = min(c1, cc1), min(c2, cc2)
+                    target_sd[first_conv_tgt][:c1, :c2] = csd[first_conv_src][:c1, :c2]
+                    shifted_weights[first_conv_tgt] = target_sd[first_conv_tgt]
+
+            # Clear base model weights and apply shifted ones
+            updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
+            updated_csd.update(shifted_weights)
+            return updated_csd
+
+        def apply_identity_shift(updated_csd):
+            try:
+                target_sd = self.state_dict()
                 src_detect_idx = None
                 for i in range(len(model.model) - 1, -1, -1):
                     if isinstance(model.model[i], Detect):
@@ -369,200 +445,110 @@ class BaseModel(torch.nn.Module):
 
                 shifted = {}
                 for k, v in csd.items():
-                    if not k.startswith("model."):
-                        continue
+                    if not k.startswith("model."): continue
                     parts = k.split(".")
-                    if len(parts) < 3 or not parts[1].isdigit():
-                        continue
+                    if len(parts) < 3 or not parts[1].isdigit(): continue
+
                     src_idx = int(parts[1])
-                    if src_detect_idx is not None and src_idx == src_detect_idx:
-                        continue
-                    new_k = "model." + str(src_idx + 1) + "." + ".".join(parts[2:])
+                    if src_detect_idx is not None and src_idx == src_detect_idx: continue
+
+                    new_k = f"model.{src_idx + 1}." + ".".join(parts[2:])
                     if new_k in target_sd and target_sd[new_k].shape == v.shape:
                         shifted[new_k] = v
 
-                # Remove any direct model.* matches (misaligned due to index shift) and replace with shifted keys.
                 updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
                 updated_csd.update(shifted)
-        except Exception:
-            pass
-        
-        # Custom Loader for Insertion, Replacement, and Wrapper cases when loading between models with architectural differences (e.g. YOLOv11 ECA/SAM variants).
-        use_custom_loader = True
-        
-        def same_architecture(m1, m2):
-            for l1, l2 in zip(m1, m2):
-                if type(l1) != type(l2):
-                    return False
-            return True
+            except Exception: pass
+            return updated_csd
 
-        # -----------------------------
-        # Case 1: use CURRENT runtime args (what user passed NOW)
-        # -----------------------------
-        resume_flag = False
-
-        if hasattr(model, "trainer") and hasattr(model.trainer, "args"):
-            resume_arg = getattr(model.trainer.args, "resume", False)
-
-            # handle Ultralytics behavior
-            if isinstance(resume_arg, str):
-                resume_flag = True
-            elif isinstance(resume_arg, bool):
-                resume_flag = resume_arg
-
-        if resume_flag:
-            use_custom_loader = False
-            print("Resuming training, skipping custom loader.")
-            
-        # Case 2: same architecture → skip
-        elif same_architecture(self.model, model.model):
-            use_custom_loader = False
-            print("Same Exact Architecture detected, skipping custom loader.")
-            
-        elif not resume_flag or not same_architecture(self.model, model.model):
-            print(f"{emojis('⚠️ ')} Resume Flag false or Architectural differences detected. Using custom loader.")
-         
-        # Custom Loader Main Logic   
-        if use_custom_loader:
+        def apply_custom_loader(updated_csd):
             try:
-                if (
-                    hasattr(self, "model")
-                    and isinstance(self.model, nn.Sequential)
-                    and hasattr(model, "model")
-                    and isinstance(model.model, nn.Sequential)
-                ):
-                    tgt_layers = list(self.model)
-                    src_layers = list(model.model)
+                tgt_layers = list(self.model)
+                src_layers = list(model.model)
+                index_map, wrapper_map = {}, {}
+                si = ti = 0
 
-                    index_map = {}          # normal mapping
-                    wrapper_map = {}        # special: map src -> tgt.block
+                while si < len(src_layers) and ti < len(tgt_layers):
+                    tgt, src = tgt_layers[ti], src_layers[si]
+                    tgt_name, src_name = tgt.__class__.__name__, src.__class__.__name__
 
-                    si = 0
-                    ti = 0
+                    if isinstance(tgt, ()):  # INSERTION
+                        ti += 1; continue
+                    if isinstance(tgt, (ECA)) and src_name == "C3k2":  # REPLACEMENT
+                        si += 1; ti += 1; continue
+                    if tgt_name in {"C3k2Spa", "C3k2Cha"} and src_name == "C3k2":  # WRAPPER
+                        wrapper_map[si] = ti
+                        si += 1; ti += 1; continue
 
-                    while si < len(src_layers) and ti < len(tgt_layers):
-                        tgt = tgt_layers[ti]
-                        src = src_layers[si]
+                    index_map[si] = ti  # NORMAL
+                    si += 1; ti += 1
 
-                        tgt_name = tgt.__class__.__name__
-                        src_name = src.__class__.__name__
+                target_sd = self.state_dict()
+                shifted = {}
+                for k, v in csd.items():
+                    if not k.startswith("model."): continue
+                    parts = k.split(".")
+                    if len(parts) < 3 or not parts[1].isdigit(): continue
 
-                        # -----------------------------
-                        # 1. INSERTION (ECA / SA)
-                        # -----------------------------
-                        if isinstance(tgt, ()):
-                            ti += 1
-                            continue
+                    src_idx = int(parts[1])
+                    if src_idx in index_map:
+                        new_k = f"model.{index_map[src_idx]}." + ".".join(parts[2:])
+                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                            shifted[new_k] = v
+                    elif src_idx in wrapper_map:
+                        tgt_idx = wrapper_map[src_idx]
+                        new_k = f"model.{tgt_idx}.block." + ".".join(parts[2:])
+                        if new_k in target_sd and target_sd[new_k].shape == v.shape:
+                            shifted[new_k] = v
 
-                        # -----------------------------
-                        # 2. REPLACEMENT (C3k2 -> ECA)
-                        # -----------------------------
-                        if isinstance(tgt, (ECA)) and src_name == "C3k2":
-                            si += 1
-                            ti += 1
-                            continue
-
-                        # -----------------------------
-                        # 3. WRAPPER (C3k2Spa / C3k2Cha)
-                        # -----------------------------
-                        if tgt_name in {"C3k2Spa", "C3k2Cha"} and src_name == "C3k2":
-                            wrapper_map[si] = ti
-                            si += 1
-                            ti += 1
-                            continue
-
-                        # -----------------------------
-                        # NORMAL ALIGN
-                        # -----------------------------
-                        index_map[si] = ti
-                        si += 1
-                        ti += 1
-
-                    target_sd = self.state_dict()
-                    shifted = {}
-
-                    for k, v in csd.items():
-                        if not k.startswith("model."):
-                            continue
-
-                        parts = k.split(".")
-                        if len(parts) < 3 or not parts[1].isdigit():
-                            continue
-
-                        src_idx = int(parts[1])
-
-                        # -----------------------------
-                        # NORMAL MAPPING
-                        # -----------------------------
-                        if src_idx in index_map:
-                            new_k = "model." + str(index_map[src_idx]) + "." + ".".join(parts[2:])
-                            if new_k in target_sd and target_sd[new_k].shape == v.shape:
-                                shifted[new_k] = v
-
-                        # -----------------------------
-                        # WRAPPER PARTIAL LOAD
-                        # -----------------------------
-                        elif src_idx in wrapper_map:
-                            tgt_idx = wrapper_map[src_idx]
-
-                            # redirect to .block
-                            new_k = "model." + str(tgt_idx) + ".block." + ".".join(parts[2:])
-
-                            if new_k in target_sd and target_sd[new_k].shape == v.shape:
-                                shifted[new_k] = v
-
-                    updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
-                    updated_csd.update(shifted)
-
+                updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
+                updated_csd.update(shifted)
             except Exception as e:
                 print(f"[Custom Loader Error] {e}")
+            return updated_csd
 
-        # If loading Detect -> DualDDetect, copy head weights into main/aux branches safely by shape.
-        try:
-            if (
-                hasattr(self, "model")
-                and len(self.model)
-                and isinstance(self.model[-1], DualDDetect)
-                and hasattr(model, "model")
-                and len(model.model)
-                and isinstance(model.model[-1], Detect)
-            ):
-                src_head = model.model[-1]
-                tgt_head = self.model[-1]
-
-                def _copy_module(dst, src):
+        def apply_dual_detect_transfer():
+            try:
+                src_head, tgt_head = model.model[-1], self.model[-1]
+                def _copy(dst, src):
                     sd = intersect_dicts(src.state_dict(), dst.state_dict())
-                    if sd:
-                        dst.load_state_dict(sd, strict=False)
+                    if sd: dst.load_state_dict(sd, strict=False)
 
                 nl = min(tgt_head.nl, src_head.nl)
                 for i in range(nl):
-                    _copy_module(tgt_head.cv2[i], src_head.cv2[i])
-                    _copy_module(tgt_head.cv3[i], src_head.cv3[i])
-                    # initialize aux branch from main branch for a stronger start
-                    _copy_module(tgt_head.cv4[i], src_head.cv2[i])
-                    _copy_module(tgt_head.cv5[i], src_head.cv3[i])
+                    _copy(tgt_head.cv2[i], src_head.cv2[i])
+                    _copy(tgt_head.cv3[i], src_head.cv3[i])
+                    _copy(tgt_head.cv4[i], src_head.cv2[i])
+                    _copy(tgt_head.cv5[i], src_head.cv3[i])
+            except Exception: pass
 
-                # Copy DFL integral weights if available
-                if hasattr(src_head, "dfl") and hasattr(tgt_head, "dfl_main"):
-                    _copy_module(tgt_head.dfl_main, src_head.dfl)
-                if hasattr(src_head, "dfl") and hasattr(tgt_head, "dfl_aux"):
-                    _copy_module(tgt_head.dfl_aux, src_head.dfl)
-        except Exception:
-            pass
-        len_updated_csd = len(updated_csd)
-        first_conv = "model.0.conv.weight"  # hard-coded to yolo models for now
-        # mostly used to boost multi-channel training
-        state_dict = self.state_dict()
-        if first_conv not in updated_csd and first_conv in state_dict:
-            c1, c2, h, w = state_dict[first_conv].shape
-            cc1, cc2, ch, cw = csd[first_conv].shape
-            if ch == h and cw == w:
-                c1, c2 = min(c1, cc1), min(c2, cc2)
-                state_dict[first_conv][:c1, :c2] = csd[first_conv][:c1, :c2]
-                len_updated_csd += 1
+        # =========================================================
+        # DECISION FLOW FOR LOADER SELECTION
+        # =========================================================
+        if is_resume():
+            print("Resuming training, skipping custom loader.")
+        elif is_same_architecture():
+            print("Same architecture, skipping custom loader.")
+        elif is_daya_architecture():
+            print("[Weight Router] DaYa-YOLO detected. Using Decoupled Spectral Loader...")
+            updated_csd = apply_daya_loader(updated_csd)
+        else:
+            print("Using standard custom loader due to architecture mismatch.")
+            if has_identity_shift_case():
+                updated_csd = apply_identity_shift(updated_csd)
+            updated_csd = apply_custom_loader(updated_csd)
+
+        # Dual Detect applies independently if present
+        if not is_resume() and not is_same_architecture() and is_dual_detect_case():
+            apply_dual_detect_transfer()
+
+        # =========================================================
+        # FINAL LOAD
+        # =========================================================
+        self.load_state_dict(updated_csd, strict=False)
+
         if verbose:
-            LOGGER.info(f"Transferred {len_updated_csd}/{len(self.model.state_dict())} items from pretrained weights")
+            LOGGER.info(f"Transferred {len(updated_csd)}/{len(self.model.state_dict())} items from pretrained weights")
 
     def loss(self, batch, preds=None):
         """
@@ -1863,6 +1849,7 @@ def parse_model(d, ch, verbose=True):
             CCS,
             C3k2Spa,
             C3k2Cha,
+            SpectralFeatureEncoder,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1908,7 +1895,7 @@ def parse_model(d, ch, verbose=True):
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
         if m in base_modules:
             c1, c2 = ch[f], args[0]
-            if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
+            if c2 != nc and m is not SpectralFeatureEncoder:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
             if m is C2fAttn:  # set 1) embed channels and 2) num heads
                 args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
