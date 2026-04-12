@@ -3,7 +3,7 @@
 
 from collections import defaultdict
 from copy import deepcopy
-from .exp_training_extensions import _update_aux_loss_schedule, _handle_dynamic_freezing
+from .exp_training_extensions import _update_aux_loss_schedule, _handle_dynamic_freezing, _announce_training_status
 
 # Trainer callbacks ----------------------------------------------------------------------------------------------------
 
@@ -25,6 +25,10 @@ def on_train_start(trainer):
 
 def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
+    
+    if trainer.epoch == 0:
+        _announce_training_status(trainer)
+        
     # 1. Update Aux Loss
     _update_aux_loss_schedule(trainer)
     

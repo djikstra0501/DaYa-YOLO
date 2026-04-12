@@ -40,29 +40,63 @@ import math
 from ultralytics.utils import LOGGER, RANK
 
 # =========================================================
+# HELPER: STATUS ANNOUNCER
+# =========================================================
+def _announce_training_status(trainer):
+    """Prints a one-time summary of which custom features are active."""
+    # Only shout on the main GPU
+    if RANK not in (-1, 0):
+        return
+
+    args = trainer.args
+    model = getattr(trainer, "model", None)
+    
+    # Check for Dynamic Freezing
+    freeze_input = getattr(args, "freeze_layers", None)
+    has_freeze = freeze_input not in (None, "None", "none", False, "False")
+    
+    # Check for Aux Loss Support (DualDDetect/PGI models only)
+    has_aux = False
+    if model:
+        crit = getattr(model, "criterion", None)
+        if crit and hasattr(crit, "aux_weight"):
+            has_aux = True
+
+    print("\n" + "="*50, flush=True)
+    if not has_freeze and not has_aux:
+        msg = "ℹ️  [Standard Mode] No custom extensions active. Running vanilla YOLO training."
+        print(msg, flush=True)
+        LOGGER.info(msg)
+    else:
+        msg = "🚀 [DaYa Extensions] Custom training logic active:"
+        print(msg, flush=True)
+        LOGGER.info(msg)
+        
+        freeze_status = f"ON (Layers: {freeze_input})" if has_freeze else "OFF"
+        aux_status = "ON (DualDDetectLoss detected)" if has_aux else "OFF (Not a PGI model)"
+        
+        print(f"   > Dynamic Freezing: {freeze_status}", flush=True)
+        print(f"   > Aux Scheduling:   {aux_status}", flush=True)
+    
+    print("="*50 + "\n", flush=True)
+
+
+# =========================================================
 # HELPER: PARSE FREEZE LAYERS
 # =========================================================
 def _parse_freeze_layers(freeze_input):
-    """
-    Parses custom freeze inputs into a list of integers.
-    Supports: "1-11", "20", "2,6,8", or integers.
-    """
     if not freeze_input or freeze_input in (None, "None", "none", "False", False):
         return []
-    
     if isinstance(freeze_input, int):
         return [freeze_input]
-        
     layers = set()
     parts = str(freeze_input).replace(" ", "").split(",")
-    
     for part in parts:
         if "-" in part:
             start, end = map(int, part.split("-"))
             layers.update(range(start, end + 1))
         elif part.isdigit():
             layers.add(int(part))
-            
     return sorted(list(layers))
 
 
@@ -70,11 +104,10 @@ def _parse_freeze_layers(freeze_input):
 # FEATURE 1: DUAL DETECT AUX LOSS SCHEDULER
 # =========================================================
 def _update_aux_loss_schedule(trainer):
-    """Handles the Aux Loss weight scheduling for PGI-Style models."""
+    """Handles the Aux Loss weight scheduling."""
     try:
         model = getattr(trainer, "model", None)
         if model is None: return
-        
         crit = getattr(model, "criterion", None)
         if crit is None or not hasattr(crit, "aux_weight"): return
 
@@ -106,34 +139,26 @@ def _update_aux_loss_schedule(trainer):
 
         crit.aux_weight = aux
         setattr(args, "aux_current", aux)
-        crit._last_aux_epoch = epoch
-        
     except Exception as e:
-        LOGGER.warning(f"[Aux Schedule Error] {e}")
+        if RANK in (-1, 0): LOGGER.warning(f"[Aux Schedule Error] {e}")
 
 
 # =========================================================
 # FEATURE 2: DYNAMIC LAYER FREEZING
 # =========================================================
 def _handle_dynamic_freezing(trainer):
-    """Handles freezing and unfreezing specific layers dynamically by epoch."""
-    
-    rank = getattr(trainer, "rank", -1)
-    is_main_process = rank in (-1, 0)
-
+    """Handles dynamic freezing/unfreezing."""
     try:
         args = trainer.args
         freeze_input = getattr(args, "freeze_layers", None)
         freeze_epochs = getattr(args, "freeze_epochs", None)
 
         target_layers = _parse_freeze_layers(freeze_input)
-        if not target_layers:
-            return
+        if not target_layers: return
 
         epoch = trainer.epoch
         model_seq = getattr(trainer.model, "model", None)
-        if model_seq is None:
-            return
+        if model_seq is None: return
 
         def _set_grad(requires_grad):
             impacted_names = []
@@ -145,28 +170,22 @@ def _handle_dynamic_freezing(trainer):
                         param.requires_grad = requires_grad
             return impacted_names
 
-        # Case A: Start of training (Epoch 0)
+        is_main = RANK in (-1, 0)
+        
         if epoch == 0:
             layer_info = _set_grad(requires_grad=False)
-            if is_main_process:
+            if is_main:
                 unfreeze_msg = f" until epoch {freeze_epochs}" if freeze_epochs else " indefinitely"
-                formatted_layers = ", ".join(layer_info)
-                
-                # We use both LOGGER and a flushed print to ensure Kaggle shows it
-                msg = f"[Dynamic Freeze] Successfully frozen: [{formatted_layers}]{unfreeze_msg}."
-                LOGGER.info(msg)
+                msg = f"[Dynamic Freeze] Successfully frozen: [{', '.join(layer_info)}]{unfreeze_msg}."
                 print(msg, flush=True)
+                LOGGER.info(msg)
 
-        # Case B: Reached the unfreeze epoch
         elif freeze_epochs is not None and epoch == int(freeze_epochs):
             layer_info = _set_grad(requires_grad=True)
-            if is_main_process:
-                formatted_layers = ", ".join(layer_info)
-                msg = f"[Dynamic Freeze] Unfrozen: [{formatted_layers}] at epoch {epoch}. Backbone is now active!"
-                LOGGER.info(msg)
+            if is_main:
+                msg = f"[Dynamic Freeze] Unfrozen: [{', '.join(layer_info)}] at epoch {epoch}. Model active!"
                 print(msg, flush=True)
+                LOGGER.info(msg)
 
     except Exception as e:
-        if getattr(trainer, "rank", -1) in (-1, 0):
-            print(f"[Dynamic Freeze Error] {e}", flush=True)
-            LOGGER.warning(f"[Dynamic Freeze Error] {e}")
+        if RANK in (-1, 0): LOGGER.warning(f"[Dynamic Freeze Error] {e}")
