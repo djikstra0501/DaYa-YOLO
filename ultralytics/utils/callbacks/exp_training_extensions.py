@@ -129,28 +129,37 @@ def _handle_dynamic_freezing(trainer):
             return
 
         epoch = trainer.epoch
-        model_seq = getattr(trainer.model, "model", None) # The nn.Sequential block
+        model_seq = getattr(trainer.model, "model", None) # The nn.Sequential architecture
         if model_seq is None:
             return
 
         def _set_grad(requires_grad):
+            """Sets gradients and returns a list of layer names for logging."""
+            impacted_names = []
             for idx, layer in enumerate(model_seq):
                 if idx in target_layers:
+                    # Capture the module name (e.g., Conv, C3k2, SPPF)
+                    m_name = layer.__class__.__name__
+                    impacted_names.append(f"{idx}:{m_name}")
+                    
                     for param in layer.parameters():
                         param.requires_grad = requires_grad
+            return impacted_names
 
-        # Check conditions to apply changes ONCE to avoid looping every single epoch
-        
         # Case A: Start of training -> Freeze them
         if epoch == 0:
-            _set_grad(requires_grad=False)
+            layer_info = _set_grad(requires_grad=False)
             unfreeze_msg = f" until epoch {freeze_epochs}" if freeze_epochs else " indefinitely"
-            LOGGER.info(f"{'⭐ ' if hasattr(trainer, 'logger') else ''}[Dynamic Freeze] Froze layers {target_layers}{unfreeze_msg}.")
+            
+            # Format: 0:Identity, 1:Conv, 2:Conv...
+            formatted_layers = ", ".join(layer_info)
+            LOGGER.info(f"⭐ [Dynamic Freeze] Successfully frozen: [{formatted_layers}]{unfreeze_msg}.")
 
         # Case B: Reached the unfreeze epoch -> Unfreeze them
         elif freeze_epochs is not None and epoch == int(freeze_epochs):
-            _set_grad(requires_grad=True)
-            LOGGER.info(f"{'🔥 ' if hasattr(trainer, 'logger') else ''}[Dynamic Freeze] Unfroze layers {target_layers} at epoch {epoch}. Model is fully active!")
+            layer_info = _set_grad(requires_grad=True)
+            formatted_layers = ", ".join(layer_info)
+            LOGGER.info(f"🔥 [Dynamic Freeze] Unfrozen: [{formatted_layers}] at epoch {epoch}. Backbone is now learning!")
 
     except Exception as e:
         LOGGER.warning(f"[Dynamic Freeze Error] {e}")
