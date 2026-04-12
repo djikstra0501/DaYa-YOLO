@@ -117,9 +117,9 @@ def _update_aux_loss_schedule(trainer):
 # =========================================================
 def _handle_dynamic_freezing(trainer):
     """Handles freezing and unfreezing specific layers dynamically by epoch."""
-    # ONLY RUN LOGS ON RANK 0 (The Main GPU)
-    # This prevents the "Silence" in DDP mode
-    is_main_process = RANK in (-1, 0)
+    
+    rank = getattr(trainer, "rank", -1)
+    is_main_process = rank in (-1, 0)
 
     try:
         args = trainer.args
@@ -167,5 +167,6 @@ def _handle_dynamic_freezing(trainer):
                 print(msg, flush=True)
 
     except Exception as e:
-        if is_main_process:
+        if getattr(trainer, "rank", -1) in (-1, 0):
+            print(f"[Dynamic Freeze Error] {e}", flush=True)
             LOGGER.warning(f"[Dynamic Freeze Error] {e}")
