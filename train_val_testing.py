@@ -20,7 +20,7 @@ try:
         exist_ok=True,
         plots=False,
         freeze_epochs=5,        # freeze backbone for first 5 epochs
-        freeze_layers="2,6,8",   # freeze layers 0-11 (backbone)
+        freeze_layers="1-11",   # freeze layers 0-11 (backbone)
     )
     print("[TEST] Train OK!")
 except Exception as e:

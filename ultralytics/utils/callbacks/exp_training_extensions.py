@@ -37,7 +37,7 @@ Last Updated:
 """
 
 import math
-from ultralytics.utils import LOGGER
+from ultralytics.utils import LOGGER, RANK
 
 # =========================================================
 # HELPER: PARSE FREEZE LAYERS
@@ -117,49 +117,55 @@ def _update_aux_loss_schedule(trainer):
 # =========================================================
 def _handle_dynamic_freezing(trainer):
     """Handles freezing and unfreezing specific layers dynamically by epoch."""
+    # ONLY RUN LOGS ON RANK 0 (The Main GPU)
+    # This prevents the "Silence" in DDP mode
+    is_main_process = RANK in (-1, 0)
+
     try:
         args = trainer.args
         freeze_input = getattr(args, "freeze_layers", None)
         freeze_epochs = getattr(args, "freeze_epochs", None)
 
         target_layers = _parse_freeze_layers(freeze_input)
-        
-        # If no layers specified, do nothing
         if not target_layers:
             return
 
         epoch = trainer.epoch
-        model_seq = getattr(trainer.model, "model", None) # The nn.Sequential architecture
+        model_seq = getattr(trainer.model, "model", None)
         if model_seq is None:
             return
 
         def _set_grad(requires_grad):
-            """Sets gradients and returns a list of layer names for logging."""
             impacted_names = []
             for idx, layer in enumerate(model_seq):
                 if idx in target_layers:
-                    # Capture the module name (e.g., Conv, C3k2, SPPF)
                     m_name = layer.__class__.__name__
                     impacted_names.append(f"{idx}:{m_name}")
-                    
                     for param in layer.parameters():
                         param.requires_grad = requires_grad
             return impacted_names
 
-        # Case A: Start of training -> Freeze them
+        # Case A: Start of training (Epoch 0)
         if epoch == 0:
             layer_info = _set_grad(requires_grad=False)
-            unfreeze_msg = f" until epoch {freeze_epochs}" if freeze_epochs else " indefinitely"
-            
-            # Format: 0:Identity, 1:Conv, 2:Conv...
-            formatted_layers = ", ".join(layer_info)
-            LOGGER.info(f"⭐ [Dynamic Freeze] Successfully frozen: [{formatted_layers}]{unfreeze_msg}.")
+            if is_main_process:
+                unfreeze_msg = f" until epoch {freeze_epochs}" if freeze_epochs else " indefinitely"
+                formatted_layers = ", ".join(layer_info)
+                
+                # We use both LOGGER and a flushed print to ensure Kaggle shows it
+                msg = f"[Dynamic Freeze] Successfully frozen: [{formatted_layers}]{unfreeze_msg}."
+                LOGGER.info(msg)
+                print(msg, flush=True)
 
-        # Case B: Reached the unfreeze epoch -> Unfreeze them
+        # Case B: Reached the unfreeze epoch
         elif freeze_epochs is not None and epoch == int(freeze_epochs):
             layer_info = _set_grad(requires_grad=True)
-            formatted_layers = ", ".join(layer_info)
-            LOGGER.info(f"🔥 [Dynamic Freeze] Unfrozen: [{formatted_layers}] at epoch {epoch}. Backbone is now learning!")
+            if is_main_process:
+                formatted_layers = ", ".join(layer_info)
+                msg = f"[Dynamic Freeze] Unfrozen: [{formatted_layers}] at epoch {epoch}. Backbone is now active!"
+                LOGGER.info(msg)
+                print(msg, flush=True)
 
     except Exception as e:
-        LOGGER.warning(f"[Dynamic Freeze Error] {e}")
+        if is_main_process:
+            LOGGER.warning(f"[Dynamic Freeze Error] {e}")
