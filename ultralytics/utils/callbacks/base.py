@@ -3,6 +3,7 @@
 
 from collections import defaultdict
 from copy import deepcopy
+from .exp_training_extensions import _update_aux_loss_schedule, _handle_dynamic_freezing
 
 # Trainer callbacks ----------------------------------------------------------------------------------------------------
 
@@ -24,52 +25,11 @@ def on_train_start(trainer):
 
 def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
-    # Update aux loss weight once per epoch if using DualDDetectLoss.
-    # Example usage:
-    # model.train(..., aux=0.5, aux_end=0.0, aux_schedule="linear", aux_start_epoch=0, aux_end_epoch=99)
-    try:
-        model = getattr(trainer, "model", None)
-        if model is None:
-            return
-        crit = getattr(model, "criterion", None)
-        if crit is None or not hasattr(crit, "aux_weight"):
-            return
-
-        epoch = trainer.epoch
-        args = trainer.args
-        total_epochs = int(getattr(args, "epochs", 0))
-        
-        schedule = getattr(args, "aux_schedule", "linear")  # "linear" (default), "cosine", "constant"/"none"
-        aux_start = float(getattr(args, "aux", 0.5))  # initial aux weight
-        aux_end = float(getattr(args, "aux_end", 0.0))  # final aux weight
-        start_epoch = int(getattr(args, "aux_start_epoch", 0))  # epoch to start scheduling
-        end_epoch = int(getattr(args, "aux_end_epoch", 0))  # epoch to end scheduling (0 = auto last)
-        if end_epoch <= 0:
-            end_epoch = max(total_epochs - 1, 0)
-        if end_epoch < start_epoch:
-            end_epoch = start_epoch
-
-        if schedule in (None, "none", "constant"):
-            aux = aux_start
-        elif epoch <= start_epoch:
-            aux = aux_start
-        elif epoch >= end_epoch:
-            aux = aux_end
-        else:
-            t = (epoch - start_epoch) / max(end_epoch - start_epoch, 1)
-            if schedule == "cosine":
-                import math
-
-                aux = aux_end + 0.5 * (aux_start - aux_end) * (1.0 + math.cos(math.pi * t))
-            else:  # linear
-                aux = aux_start + (aux_end - aux_start) * t
-
-        crit.aux_weight = aux
-        setattr(args, "aux_current", aux)
-        crit._last_aux_epoch = epoch
-    except Exception as e:
-        trainer.logger.warning(f"[AUX] aux scheduling failed: {e}")
-        pass
+    # 1. Update Aux Loss
+    _update_aux_loss_schedule(trainer)
+    
+    # 2. Update Freezing States
+    _handle_dynamic_freezing(trainer)
 
 
 def on_train_batch_start(trainer):

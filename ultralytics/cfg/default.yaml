@@ -46,6 +46,10 @@ aux_schedule: linear # (str) aux schedule: linear, cosine, constant/none
 aux_start_epoch: 0 # (int) epoch to start scheduling aux weight
 aux_end_epoch: 0 # (int) epoch to end scheduling aux weight (0 = auto to last epoch)
 
+# Dynamic Freezing -------------------------------------------------------------------------------
+freeze_layers: None # (str | int) custom layer indices to freeze (e.g., "0-11", "20", "2,6,8")
+freeze_epochs: None # (int) epoch to unfreeze the custom layers (e.g., 30)
+
 # Segmentation
 overlap_mask: True # (bool) merge instance masks into one mask during training (segment only)
 mask_ratio: 4 # (int) mask downsample ratio (segment only)

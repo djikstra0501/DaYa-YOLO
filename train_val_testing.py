@@ -2,7 +2,7 @@
 import traceback
 
 # Load your custom model config
-model = YOLO("ultralytics/cfg/models/11/yolov11-eca-sam.yaml")
+model = YOLO("ultralytics/cfg/models/11/yolov11-color.yaml")
 
 # --- TRAIN TEST ---
 try:
@@ -19,6 +19,8 @@ try:
         name=None,           # no run name
         exist_ok=True,
         plots=False,
+        freeze_epochs=5,        # freeze backbone for first 5 epochs
+        freeze_layers="2,6,8",   # freeze layers 0-11 (backbone)
     )
     print("[TEST] Train OK!")
 except Exception as e:
