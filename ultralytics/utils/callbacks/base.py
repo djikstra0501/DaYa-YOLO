@@ -6,6 +6,7 @@ from copy import deepcopy
 from ultralytics.utils import LOGGER, RANK
 import math
 import torch
+import sys
 # from .exp_training_extensions import _get_training_status_msg, _execute_dynamic_freezing, _update_aux_loss_schedule
 
 # Trainer callbacks ----------------------------------------------------------------------------------------------------
@@ -29,13 +30,12 @@ def on_train_start(trainer):
 def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
     
-    is_main = RANK in (-1, 0)
     args = trainer.args
     epoch = trainer.epoch
     model = getattr(trainer, "model", None)
     
     # --- 1. PRE-FLIGHT CHECK & ANNOUNCEMENT (Epoch 0 only) ---
-    if epoch == 0 and is_main:
+    if epoch == 0:
         freeze_input = getattr(args, "freeze_layers", None)
         freeze_until = getattr(args, "freeze_epochs", None)
         has_freeze = freeze_input not in (None, "None", "none", False, "False")
@@ -47,17 +47,23 @@ def on_train_epoch_start(trainer):
                 has_aux = True
 
         header = "═"*50
-        print(f"\n{header}", flush=True)
+        # Force writing to sys.stdout and stderr just in case Kaggle traps one
+        sys.stdout.write(f"\n{header}\n")
+        sys.stderr.write(f"\n{header}\n")
+        
         if not has_freeze and not has_aux:
-            print("ℹ️  [Standard Mode] No custom extensions active.", flush=True)
+            sys.stdout.write("ℹ️  [Standard Mode] No custom extensions active.\n")
         else:
-            print("🚀 [DaYa Extensions] Custom logic active:", flush=True)
+            sys.stdout.write("🚀 [DaYa Extensions] Custom logic active:\n")
             if has_freeze:
                 duration = f"until epoch {freeze_until}" if freeze_until else "indefinitely"
-                print(f"   > Dynamic Freezing: ON | Layers: {freeze_input} | Duration: {duration}", flush=True)
+                sys.stdout.write(f"   > Dynamic Freezing: ON | Layers: {freeze_input} | Duration: {duration}\n")
             if has_aux:
-                print(f"   > Aux Scheduling:   ON (DualDDetectLoss detected)", flush=True)
-        print(f"{header}\n", flush=True)
+                sys.stdout.write(f"   > Aux Scheduling:   ON (DualDDetectLoss detected)\n")
+        
+        sys.stdout.write(f"{header}\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     # --- 2. DYNAMIC FREEZING EXECUTION ---
     freeze_input = getattr(args, "freeze_layers", None)
@@ -87,22 +93,27 @@ def on_train_epoch_start(trainer):
                         for param in layer.parameters():
                             param.requires_grad = not should_be_frozen
                 
-                # WEIGHT DNA PROOF (Only on main process)
-                if is_main:
-                    sentinel_idx = target_layers[0]
-                    # Check if the layer actually exists to avoid crash
-                    if len(model_seq) > sentinel_idx:
-                        layer = model_seq[sentinel_idx]
-                        weight_sum = 0
-                        for param in layer.parameters():
-                            weight_sum += param.sum().item()
-                            break # Only need one tensor for proof
-                        
-                        status = "❄️  FROZEN" if should_be_frozen else "🔥 ACTIVE"
-                        print(f"[Epoch {epoch}] {status} | Layer {sentinel_idx} DNA: {weight_sum:.10f}", flush=True)
+                # WEIGHT DNA PROOF (Print everywhere)
+                sentinel_idx = target_layers[0]
+                if len(model_seq) > sentinel_idx:
+                    layer = model_seq[sentinel_idx]
+                    weight_sum = 0
+                    for param in layer.parameters():
+                        weight_sum += param.sum().item()
+                        break 
+                    
+                    status = "❄️  FROZEN" if should_be_frozen else "🔥 ACTIVE"
+                    msg = f"[Epoch {epoch}] {status} | Layer {sentinel_idx} DNA: {weight_sum:.10f}\n"
+                    
+                    # Direct to system outputs
+                    sys.stdout.write(msg)
+                    sys.stdout.flush()
+                    # Also use standard print just in case
+                    print(msg, end='', flush=True)
 
         except Exception as e:
-            if is_main: print(f"⚠️ [Freeze Error] {e}", flush=True)
+            sys.stdout.write(f"⚠️ [Freeze Error] {e}\n")
+            sys.stdout.flush()
 
     # --- 3. AUX LOSS SCHEDULING ---
     try:
