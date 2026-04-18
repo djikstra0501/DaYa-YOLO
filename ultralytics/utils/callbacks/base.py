@@ -30,12 +30,13 @@ def on_train_start(trainer):
 def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
     
+    is_main = RANK in (-1, 0)
     args = trainer.args
     epoch = trainer.epoch
     model = getattr(trainer, "model", None)
     
     # --- 1. PRE-FLIGHT CHECK & ANNOUNCEMENT (Epoch 0 only) ---
-    if epoch == 0:
+    if epoch == 0 and is_main:
         freeze_input = getattr(args, "freeze_layers", None)
         freeze_until = getattr(args, "freeze_epochs", None)
         has_freeze = freeze_input not in (None, "None", "none", False, "False")
@@ -47,23 +48,17 @@ def on_train_epoch_start(trainer):
                 has_aux = True
 
         header = "═"*50
-        # Force writing to sys.stdout and stderr just in case Kaggle traps one
-        sys.stdout.write(f"\n{header}\n")
-        sys.stderr.write(f"\n{header}\n")
-        
+        print(f"\n{header}", flush=True)
         if not has_freeze and not has_aux:
-            sys.stdout.write("ℹ️  [Standard Mode] No custom extensions active.\n")
+            print("ℹ️  [Standard Mode] No custom extensions active.", flush=True)
         else:
-            sys.stdout.write("🚀 [DaYa Extensions] Custom logic active:\n")
+            print("🚀 [DaYa Extensions] Custom logic active:", flush=True)
             if has_freeze:
                 duration = f"until epoch {freeze_until}" if freeze_until else "indefinitely"
-                sys.stdout.write(f"   > Dynamic Freezing: ON | Layers: {freeze_input} | Duration: {duration}\n")
+                print(f"   > Dynamic Freezing: ON | Layers: {freeze_input} | Duration: {duration}", flush=True)
             if has_aux:
-                sys.stdout.write(f"   > Aux Scheduling:   ON (DualDDetectLoss detected)\n")
-        
-        sys.stdout.write(f"{header}\n")
-        sys.stdout.flush()
-        sys.stderr.flush()
+                print(f"   > Aux Scheduling:   ON (DualDDetectLoss detected)", flush=True)
+        print(f"{header}\n", flush=True)
 
     # --- 2. DYNAMIC FREEZING EXECUTION ---
     freeze_input = getattr(args, "freeze_layers", None)
@@ -92,28 +87,35 @@ def on_train_epoch_start(trainer):
                     if idx in target_layers:
                         for param in layer.parameters():
                             param.requires_grad = not should_be_frozen
-                
-                # WEIGHT DNA PROOF (Print everywhere)
-                sentinel_idx = target_layers[0]
-                if len(model_seq) > sentinel_idx:
-                    layer = model_seq[sentinel_idx]
-                    weight_sum = 0
-                    for param in layer.parameters():
-                        weight_sum += param.sum().item()
-                        break 
-                    
-                    status = "❄️  FROZEN" if should_be_frozen else "🔥 ACTIVE"
-                    msg = f"[Epoch {epoch}] {status} | Layer {sentinel_idx} DNA: {weight_sum:.10f}\n"
-                    
-                    # Direct to system outputs
-                    sys.stdout.write(msg)
-                    sys.stdout.flush()
-                    # Also use standard print just in case
-                    print(msg, end='', flush=True)
+
+            # WEIGHT DNA PROOF — FORCED (runs regardless of model_seq)
+            if is_main:
+                print(f"[Epoch {epoch}] DEBUG: Entering DNA block | target_layers={target_layers}", flush=True)
+
+                if model_seq is None:
+                    print(f"[Epoch {epoch}] ⚠️  DNA SKIPPED — model.model is None! model attrs: {[a for a in dir(model) if not a.startswith('_')]}", flush=True)
+                else:
+                    freeze_limit = int(getattr(args, "freeze_epochs", 999999))
+                    should_be_frozen = epoch < freeze_limit
+                    sentinel_idx = target_layers[0]
+                    print(f"[Epoch {epoch}] DEBUG: model_seq len={len(model_seq)} | sentinel_idx={sentinel_idx}", flush=True)
+
+                    if len(model_seq) > sentinel_idx:
+                        layer = model_seq[sentinel_idx]
+                        params = list(layer.parameters())
+                        print(f"[Epoch {epoch}] DEBUG: layer={layer.__class__.__name__} | num_params={len(params)}", flush=True)
+
+                        if params:
+                            weight_sum = params[0].sum().item()
+                            status = "❄️  FROZEN" if should_be_frozen else "🔥 ACTIVE"
+                            print(f"[Epoch {epoch}] {status} | Layer {sentinel_idx} DNA: {weight_sum:.10f}", flush=True)
+                        else:
+                            print(f"[Epoch {epoch}] ⚠️  DNA SKIPPED — layer {sentinel_idx} has NO parameters!", flush=True)
+                    else:
+                        print(f"[Epoch {epoch}] ⚠️  DNA SKIPPED — sentinel_idx {sentinel_idx} out of range (model_seq len={len(model_seq)})", flush=True)
 
         except Exception as e:
-            sys.stdout.write(f"⚠️ [Freeze Error] {e}\n")
-            sys.stdout.flush()
+            if is_main: print(f"⚠️ [Freeze Error] {e}", flush=True)
 
     # --- 3. AUX LOSS SCHEDULING ---
     try:
