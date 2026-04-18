@@ -30,20 +30,110 @@ def on_train_epoch_start(trainer):
     """Called at the start of each training epoch."""
     
     is_main = RANK in (-1, 0)
+    args = trainer.args
+    epoch = trainer.epoch
+    model = getattr(trainer, "model", None)
     
-    # 1. Announcement (Only at Start)
-    if trainer.epoch == 0:
-        msg = _get_training_status_msg(trainer)
-        if is_main:
-            print(msg, flush=True)
+    # --- 1. PRE-FLIGHT CHECK & ANNOUNCEMENT (Epoch 0 only) ---
+    if epoch == 0 and is_main:
+        freeze_input = getattr(args, "freeze_layers", None)
+        freeze_until = getattr(args, "freeze_epochs", None)
+        has_freeze = freeze_input not in (None, "None", "none", False, "False")
+        
+        has_aux = False
+        if model:
+            crit = getattr(model, "criterion", None)
+            if crit and hasattr(crit, "aux_weight"):
+                has_aux = True
 
-    # 2. Freezing Execution & Passthrough Logging
-    freeze_msg = _execute_dynamic_freezing(trainer)
-    if freeze_msg and is_main:
-        print(freeze_msg, flush=True)
+        header = "═"*50
+        print(f"\n{header}", flush=True)
+        if not has_freeze and not has_aux:
+            print("ℹ️  [Standard Mode] No custom extensions active.", flush=True)
+        else:
+            print("🚀 [DaYa Extensions] Custom logic active:", flush=True)
+            if has_freeze:
+                duration = f"until epoch {freeze_until}" if freeze_until else "indefinitely"
+                print(f"   > Dynamic Freezing: ON | Layers: {freeze_input} | Duration: {duration}", flush=True)
+            if has_aux:
+                print(f"   > Aux Scheduling:   ON (DualDDetectLoss detected)", flush=True)
+        print(f"{header}\n", flush=True)
 
-    # 3. Aux Scheduling
-    _update_aux_loss_schedule(trainer)
+    # --- 2. DYNAMIC FREEZING EXECUTION ---
+    freeze_input = getattr(args, "freeze_layers", None)
+    if freeze_input and freeze_input not in (None, "None", "none", False, "False"):
+        try:
+            # Parse Layers
+            target_layers = []
+            if isinstance(freeze_input, int): 
+                target_layers = [freeze_input]
+            else:
+                parts = str(freeze_input).replace(" ", "").split(",")
+                for p in parts:
+                    if "-" in p:
+                        s, e = map(int, p.split("-"))
+                        target_layers.extend(range(s, e + 1))
+                    elif p.isdigit(): 
+                        target_layers.append(int(p))
+
+            model_seq = getattr(model, "model", None)
+            if model_seq is not None:
+                freeze_limit = int(getattr(args, "freeze_epochs", 999999))
+                should_be_frozen = epoch < freeze_limit
+
+                # APPLY FREEZE/UNFREEZE
+                for idx, layer in enumerate(model_seq):
+                    if idx in target_layers:
+                        for param in layer.parameters():
+                            param.requires_grad = not should_be_frozen
+                
+                # WEIGHT DNA PROOF (Only on main process)
+                if is_main:
+                    sentinel_idx = target_layers[0]
+                    # Check if the layer actually exists to avoid crash
+                    if len(model_seq) > sentinel_idx:
+                        layer = model_seq[sentinel_idx]
+                        weight_sum = 0
+                        for param in layer.parameters():
+                            weight_sum += param.sum().item()
+                            break # Only need one tensor for proof
+                        
+                        status = "❄️  FROZEN" if should_be_frozen else "🔥 ACTIVE"
+                        print(f"[Epoch {epoch}] {status} | Layer {sentinel_idx} DNA: {weight_sum:.10f}", flush=True)
+
+        except Exception as e:
+            if is_main: print(f"⚠️ [Freeze Error] {e}", flush=True)
+
+    # --- 3. AUX LOSS SCHEDULING ---
+    try:
+        if model:
+            crit = getattr(model, "criterion", None)
+            if crit and hasattr(crit, "aux_weight"):
+                total_epochs = int(getattr(args, "epochs", 0))
+                schedule = getattr(args, "aux_schedule", "linear")
+                aux_start = float(getattr(args, "aux", 0.5))
+                aux_end = float(getattr(args, "aux_end", 0.0))
+                start_epoch = int(getattr(args, "aux_start_epoch", 0))
+                end_epoch = int(getattr(args, "aux_end_epoch", 0))
+                
+                if end_epoch <= 0: end_epoch = max(total_epochs - 1, 0)
+                if end_epoch < start_epoch: end_epoch = start_epoch
+
+                if schedule in (None, "none", "constant") or epoch <= start_epoch:
+                    aux = aux_start
+                elif epoch >= end_epoch:
+                    aux = aux_end
+                else:
+                    t = (epoch - start_epoch) / max(end_epoch - start_epoch, 1)
+                    if schedule == "cosine":
+                        aux = aux_end + 0.5 * (aux_start - aux_end) * (1.0 + math.cos(math.pi * t))
+                    else:
+                        aux = aux_start + (aux_end - aux_start) * t
+
+                crit.aux_weight = aux
+                setattr(args, "aux_current", aux)
+    except:
+        pass
 
 
 def on_train_batch_start(trainer):
@@ -252,162 +342,3 @@ def add_integration_callbacks(instance):
         for k, v in callbacks.items():
             if v not in instance.callbacks[k]:
                 instance.callbacks[k].append(v)
-
-# Custom training extensions -----------------------------------------------------------------------------------------------
-
-# =========================================================
-# DA-YA EXTENSIONS: HELPERS
-# =========================================================
-
-def _get_training_status_msg(trainer):
-    """Returns a summary string of active features."""
-    args = trainer.args
-    model = getattr(trainer, "model", None)
-    
-    freeze_input = getattr(args, "freeze_layers", None)
-    freeze_until = getattr(args, "freeze_epochs", None)
-    has_freeze = freeze_input not in (None, "None", "none", False, "False")
-    
-    has_aux = False
-    if model:
-        crit = getattr(model, "criterion", None)
-        if crit and hasattr(crit, "aux_weight"):
-            has_aux = True
-
-    header = "═"*50
-    if not has_freeze and not has_aux:
-        return f"\n{header}\nℹ️  [Standard Mode] No custom extensions active.\n{header}\n"
-    
-    freeze_status = f"ON | Layers: {freeze_input} | Duration: until epoch {freeze_until}" if has_freeze else "OFF"
-    aux_status = "ON (DualDDetectLoss detected)" if has_aux else "OFF"
-    
-    msg = [
-        f"\n{header}",
-        "🚀 [DaYa Extensions] Custom training logic active:",
-        f"   > Dynamic Freezing: {freeze_status}",
-        f"   > Aux Scheduling:   {aux_status}",
-        f"{header}\n"
-    ]
-    return "\n".join(msg)
-
-
-def _get_weight_dna(trainer, target_layers):
-    """Calculates the sum of weights for the first frozen layer to prove zero learning."""
-    try:
-        if not target_layers:
-            return ""
-        
-        model_seq = getattr(trainer.model, "model", None)
-        sentinel_idx = target_layers[0] 
-        layer = model_seq[sentinel_idx]
-        
-        weight_sum = 0
-        for param in layer.parameters():
-            weight_sum += param.sum().item()
-            break # Just check the first tensor
-            
-        return f" | Layer {sentinel_idx} DNA: {weight_sum:.10f}"
-    except:
-        return ""
-
-
-# =========================================================
-# DA-YA EXTENSIONS: CORE LOGIC
-# =========================================================
-
-def _update_aux_loss_schedule(trainer):
-    """Handles the Aux Loss weight scheduling."""
-    try:
-        model = getattr(trainer, "model", None)
-        if model is None: return
-        crit = getattr(model, "criterion", None)
-        if crit is None or not hasattr(crit, "aux_weight"): return
-
-        epoch = trainer.epoch
-        args = trainer.args
-        total_epochs = int(getattr(args, "epochs", 0))
-        
-        schedule = getattr(args, "aux_schedule", "linear")
-        aux_start = float(getattr(args, "aux", 0.5))
-        aux_end = float(getattr(args, "aux_end", 0.0))
-        start_epoch = int(getattr(args, "aux_start_epoch", 0))
-        end_epoch = int(getattr(args, "aux_end_epoch", 0))
-        
-        if end_epoch <= 0: end_epoch = max(total_epochs - 1, 0)
-        if end_epoch < start_epoch: end_epoch = start_epoch
-
-        if schedule in (None, "none", "constant"):
-            aux = aux_start
-        elif epoch <= start_epoch:
-            aux = aux_start
-        elif epoch >= end_epoch:
-            aux = aux_end
-        else:
-            t = (epoch - start_epoch) / max(end_epoch - start_epoch, 1)
-            if schedule == "cosine":
-                aux = aux_end + 0.5 * (aux_start - aux_end) * (1.0 + math.cos(math.pi * t))
-            else:
-                aux = aux_start + (aux_end - aux_start) * t
-
-        crit.aux_weight = aux
-        setattr(args, "aux_current", aux)
-    except Exception:
-        pass
-
-
-def _execute_dynamic_freezing(trainer):
-    """Handles math and returns status + weight DNA every epoch."""
-    try:
-        args = trainer.args
-        freeze_input = getattr(args, "freeze_layers", None)
-        freeze_epochs = getattr(args, "freeze_epochs", None)
-        epoch = trainer.epoch
-        
-        target_layers = []
-        if freeze_input and freeze_input not in (None, "None", "none", "False", False):
-            if isinstance(freeze_input, int): target_layers = [freeze_input]
-            else:
-                parts = str(freeze_input).replace(" ", "").split(",")
-                for p in parts:
-                    if "-" in p:
-                        s, e = map(int, p.split("-"))
-                        target_layers.extend(range(s, e + 1))
-                    elif p.isdigit(): target_layers.append(int(p))
-
-        if not target_layers: return None
-
-        model_seq = getattr(trainer.model, "model", None)
-        if model_seq is None: return None
-
-        # 1. Force state
-        freeze_limit = int(freeze_epochs) if freeze_epochs else 999999
-        should_be_frozen = epoch < freeze_limit
-
-        for idx, layer in enumerate(model_seq):
-            if idx in target_layers:
-                for param in layer.parameters():
-                    param.requires_grad = not should_be_frozen
-
-        # 2. Generate Proof DNA
-        dna_str = _get_weight_dna(trainer, target_layers)
-
-        # 3. Handle messaging
-        if not hasattr(trainer, "_last_freeze_state"):
-            trainer._last_freeze_state = None
-
-        if should_be_frozen:
-            state_msg = "STILL FROZEN"
-            icon = "❄️"
-            if trainer._last_freeze_state != "frozen":
-                state_msg = "APPLIED FREEZE"
-                icon = "⭐"
-                trainer._last_freeze_state = "frozen"
-            return f"{icon} [Dynamic Freeze] {state_msg} (Epoch {epoch} < {freeze_limit}){dna_str}"
-        
-        elif not should_be_frozen and trainer._last_freeze_state == "frozen":
-            trainer._last_freeze_state = "unfrozen"
-            return f"🔥 [Dynamic Freeze] LIMIT REACHED: Layers unfrozen at epoch {epoch}.{dna_str}"
-
-        return None
-    except Exception as e:
-        return f"⚠️ [Dynamic Freeze Error] {e}"
