@@ -6,7 +6,6 @@ from copy import deepcopy
 from ultralytics.utils import LOGGER, RANK
 import math
 import torch
-import sys
 # from .exp_training_extensions import _get_training_status_msg, _execute_dynamic_freezing, _update_aux_loss_schedule
 
 # Trainer callbacks ----------------------------------------------------------------------------------------------------
@@ -88,31 +87,18 @@ def on_train_epoch_start(trainer):
                         for param in layer.parameters():
                             param.requires_grad = not should_be_frozen
 
-            # WEIGHT DNA PROOF — FORCED (runs regardless of model_seq)
-            if is_main:
-                print(f"[Epoch {epoch}] DEBUG: Entering DNA block | target_layers={target_layers}", flush=True)
-
-                if model_seq is None:
-                    print(f"[Epoch {epoch}] ⚠️  DNA SKIPPED — model.model is None! model attrs: {[a for a in dir(model) if not a.startswith('_')]}", flush=True)
-                else:
-                    freeze_limit = int(getattr(args, "freeze_epochs", 999999))
-                    should_be_frozen = epoch < freeze_limit
+                # WEIGHT DNA PROOF
+                if is_main:
                     sentinel_idx = target_layers[0]
-                    print(f"[Epoch {epoch}] DEBUG: model_seq len={len(model_seq)} | sentinel_idx={sentinel_idx}", flush=True)
-
                     if len(model_seq) > sentinel_idx:
-                        layer = model_seq[sentinel_idx]
-                        params = list(layer.parameters())
-                        print(f"[Epoch {epoch}] DEBUG: layer={layer.__class__.__name__} | num_params={len(params)}", flush=True)
-
+                        params = list(model_seq[sentinel_idx].parameters())
                         if params:
                             weight_sum = params[0].sum().item()
                             status = "❄️  FROZEN" if should_be_frozen else "🔥 ACTIVE"
                             print(f"[Epoch {epoch}] {status} | Layer {sentinel_idx} DNA: {weight_sum:.10f}", flush=True)
-                        else:
-                            print(f"[Epoch {epoch}] ⚠️  DNA SKIPPED — layer {sentinel_idx} has NO parameters!", flush=True)
-                    else:
-                        print(f"[Epoch {epoch}] ⚠️  DNA SKIPPED — sentinel_idx {sentinel_idx} out of range (model_seq len={len(model_seq)})", flush=True)
+            else:
+                if is_main:
+                    print(f"⚠️ [Freeze Error] Could not resolve model sequence — DDP unwrap failed.", flush=True)
 
         except Exception as e:
             if is_main: print(f"⚠️ [Freeze Error] {e}", flush=True)
@@ -147,7 +133,6 @@ def on_train_epoch_start(trainer):
                 setattr(args, "aux_current", aux)
     except:
         pass
-
 
 def on_train_batch_start(trainer):
     """Called at the start of each training batch."""
