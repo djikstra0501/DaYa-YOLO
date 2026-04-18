@@ -37,68 +37,41 @@ Last Updated:
 """
 
 import math
-from ultralytics.utils import LOGGER, RANK
+import torch
 
 # =========================================================
-# HELPER: STATUS ANNOUNCER
+# HELPER: STATUS ANNOUNCER (LOGIC ONLY)
 # =========================================================
-def _announce_training_status(trainer):
-    """Prints a one-time summary of which custom features are active."""
-    # Only shout on the main GPU
-    if RANK not in (-1, 0):
-        return
-
+def _get_training_status_msg(trainer):
+    """Returns a summary string of active features."""
     args = trainer.args
     model = getattr(trainer, "model", None)
     
-    # Check for Dynamic Freezing
     freeze_input = getattr(args, "freeze_layers", None)
+    freeze_until = getattr(args, "freeze_epochs", None)
     has_freeze = freeze_input not in (None, "None", "none", False, "False")
     
-    # Check for Aux Loss Support (DualDDetect/PGI models only)
     has_aux = False
     if model:
         crit = getattr(model, "criterion", None)
         if crit and hasattr(crit, "aux_weight"):
             has_aux = True
 
-    print("\n" + "="*50, flush=True)
+    header = "═"*50
     if not has_freeze and not has_aux:
-        msg = "ℹ️  [Standard Mode] No custom extensions active. Running vanilla YOLO training."
-        print(msg, flush=True)
-        LOGGER.info(msg)
-    else:
-        msg = "🚀 [DaYa Extensions] Custom training logic active:"
-        print(msg, flush=True)
-        LOGGER.info(msg)
-        
-        freeze_status = f"ON (Layers: {freeze_input})" if has_freeze else "OFF"
-        aux_status = "ON (DualDDetectLoss detected)" if has_aux else "OFF (Not a PGI model)"
-        
-        print(f"   > Dynamic Freezing: {freeze_status}", flush=True)
-        print(f"   > Aux Scheduling:   {aux_status}", flush=True)
+        return f"\n{header}\nℹ️  [Standard Mode] No custom extensions active.\n{header}\n"
     
-    print("="*50 + "\n", flush=True)
-
-
-# =========================================================
-# HELPER: PARSE FREEZE LAYERS
-# =========================================================
-def _parse_freeze_layers(freeze_input):
-    if not freeze_input or freeze_input in (None, "None", "none", "False", False):
-        return []
-    if isinstance(freeze_input, int):
-        return [freeze_input]
-    layers = set()
-    parts = str(freeze_input).replace(" ", "").split(",")
-    for part in parts:
-        if "-" in part:
-            start, end = map(int, part.split("-"))
-            layers.update(range(start, end + 1))
-        elif part.isdigit():
-            layers.add(int(part))
-    return sorted(list(layers))
-
+    freeze_status = f"ON | Layers: {freeze_input} | Duration: until epoch {freeze_until}" if has_freeze else "OFF"
+    aux_status = "ON (DualDDetectLoss detected)" if has_aux else "OFF"
+    
+    msg = [
+        f"\n{header}",
+        "🚀 [DaYa Extensions] Custom training logic active:",
+        f"   > Dynamic Freezing: {freeze_status}",
+        f"   > Aux Scheduling:   {aux_status}",
+        f"{header}\n"
+    ]
+    return "\n".join(msg)
 
 # =========================================================
 # FEATURE 1: DUAL DETECT AUX LOSS SCHEDULER
@@ -140,52 +113,88 @@ def _update_aux_loss_schedule(trainer):
         crit.aux_weight = aux
         setattr(args, "aux_current", aux)
     except Exception as e:
-        if RANK in (-1, 0): LOGGER.warning(f"[Aux Schedule Error] {e}")
-
+        return None
 
 # =========================================================
-# FEATURE 2: DYNAMIC LAYER FREEZING
+# HELPER: WEIGHT INTEGRITY CHECK
 # =========================================================
-def _handle_dynamic_freezing(trainer):
-    """Handles dynamic freezing/unfreezing."""
+def _get_weight_dna(trainer, target_layers):
+    """Calculates the sum of weights for the first frozen layer to prove zero learning."""
+    try:
+        if not target_layers:
+            return ""
+        
+        model_seq = getattr(trainer.model, "model", None)
+        # We check the first layer in your freeze list (usually Layer 1)
+        sentinel_idx = target_layers[0] 
+        layer = model_seq[sentinel_idx]
+        
+        # Get the sum of the first parameter tensor (usually weights)
+        weight_sum = 0
+        for param in layer.parameters():
+            weight_sum += param.sum().item()
+            break # Just checking the first tensor is enough for a 'DNA' proof
+            
+        return f" | Layer {sentinel_idx} DNA: {weight_sum:.10f}"
+    except:
+        return ""
+
+# =========================================================
+# FEATURE 2: DYNAMIC LAYER FREEZING (WITH INTEGRITY CHECK)
+# =========================================================
+def _execute_dynamic_freezing(trainer):
+    """Handles math and returns status + weight DNA."""
     try:
         args = trainer.args
         freeze_input = getattr(args, "freeze_layers", None)
         freeze_epochs = getattr(args, "freeze_epochs", None)
-
-        target_layers = _parse_freeze_layers(freeze_input)
-        if not target_layers: return
-
         epoch = trainer.epoch
-        model_seq = getattr(trainer.model, "model", None)
-        if model_seq is None: return
-
-        def _set_grad(requires_grad):
-            impacted_names = []
-            for idx, layer in enumerate(model_seq):
-                if idx in target_layers:
-                    m_name = layer.__class__.__name__
-                    impacted_names.append(f"{idx}:{m_name}")
-                    for param in layer.parameters():
-                        param.requires_grad = requires_grad
-            return impacted_names
-
-        is_main = RANK in (-1, 0)
         
-        if epoch == 0:
-            layer_info = _set_grad(requires_grad=False)
-            if is_main:
-                unfreeze_msg = f" until epoch {freeze_epochs}" if freeze_epochs else " indefinitely"
-                msg = f"[Dynamic Freeze] Successfully frozen: [{', '.join(layer_info)}]{unfreeze_msg}."
-                print(msg, flush=True)
-                LOGGER.info(msg)
+        target_layers = []
+        if freeze_input and freeze_input not in (None, "None", "none", "False", False):
+            if isinstance(freeze_input, int): target_layers = [freeze_input]
+            else:
+                parts = str(freeze_input).replace(" ", "").split(",")
+                for p in parts:
+                    if "-" in p:
+                        s, e = map(int, p.split("-"))
+                        target_layers.extend(range(s, e + 1))
+                    elif p.isdigit(): target_layers.append(int(p))
 
-        elif freeze_epochs is not None and epoch == int(freeze_epochs):
-            layer_info = _set_grad(requires_grad=True)
-            if is_main:
-                msg = f"[Dynamic Freeze] Unfrozen: [{', '.join(layer_info)}] at epoch {epoch}. Model active!"
-                print(msg, flush=True)
-                LOGGER.info(msg)
+        if not target_layers: return None
 
+        model_seq = getattr(trainer.model, "model", None)
+        if model_seq is None: return None
+
+        # 1. Force state based on current epoch
+        freeze_limit = int(freeze_epochs) if freeze_epochs else 999999
+        should_be_frozen = epoch < freeze_limit
+
+        for idx, layer in enumerate(model_seq):
+            if idx in target_layers:
+                for param in layer.parameters():
+                    param.requires_grad = not should_be_frozen
+
+        # 2. Generate the "Proof" DNA
+        dna_str = _get_weight_dna(trainer, target_layers)
+
+        # 3. Handle messaging
+        if not hasattr(trainer, "_last_freeze_state"):
+            trainer._last_freeze_state = None
+
+        if should_be_frozen:
+            state_msg = "STILL FROZEN"
+            icon = "❄️"
+            if trainer._last_freeze_state != "frozen":
+                state_msg = "APPLIED FREEZE"
+                icon = "⭐"
+                trainer._last_freeze_state = "frozen"
+            return f"{icon} [Dynamic Freeze] {state_msg} (Epoch {epoch} < {freeze_limit}){dna_str}"
+        
+        elif not should_be_frozen and trainer._last_freeze_state == "frozen":
+            trainer._last_freeze_state = "unfrozen"
+            return f"🔥 [Dynamic Freeze] LIMIT REACHED: Layers unfrozen at epoch {epoch}.{dna_str}"
+
+        return None
     except Exception as e:
-        if RANK in (-1, 0): LOGGER.warning(f"[Dynamic Freeze Error] {e}")
+        return f"⚠️ [Dynamic Freeze Error] {e}"
