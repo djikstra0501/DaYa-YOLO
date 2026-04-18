@@ -77,7 +77,7 @@ def on_train_epoch_start(trainer):
                     elif p.isdigit(): 
                         target_layers.append(int(p))
 
-            model_seq = getattr(model, "model", None)
+            model_seq = getattr(model, "model", None) or getattr(getattr(model, "module", None), "model", None)
             if model_seq is not None:
                 freeze_limit = int(getattr(args, "freeze_epochs", 999999))
                 should_be_frozen = epoch < freeze_limit
