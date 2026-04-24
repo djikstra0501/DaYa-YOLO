@@ -1160,69 +1160,127 @@ class GnConv(nn.Module):
 
 class SpectralFeatureEncoder(nn.Module):
     """
-    Learnable Spectral Encoder for Rice Pest Detection.
-    This module can be initialized to perform RGB→XYZ or RGB→LAB conversion,
-    and the convolutional weights can be fine-tuned during training to optimize.
-    
-    The purpose of this module is to allow the model to learn an optimal spectral transformation
-    that may enhance feature extraction for pest detection, while starting from a known color space conversion.
+    Learnable Spectral Encoder for Rice Pest Detection (DaYa-YOLO).
+
+    Modes:
+        XYZ - CIE XYZ color space, full matrix initialization.
+        LAB - True CIE LAB conversion (sRGB linearized, D65 white point),
+              with 3 learnable scale parameters acting as automatic channel
+              importance weights (equivalent to sliding L*, a*, b* sliders
+              to find the best pest-visible combination).
+
+    YAML usage:
+        - [0, 1, SpectralFeatureEncoder, [3, "LAB"]]
+        - [0, 1, SpectralFeatureEncoder, [3, "XYZ"]]
     """
-    INIT_WEIGHTS = {
-        "XYZ": torch.tensor([
-            [0.4124, 0.3576, 0.1805],
-            [0.2126, 0.7152, 0.0722],
-            [0.0193, 0.1192, 0.9505],
-        ]),
-    }
 
     def __init__(self, c1=3, c2=3, mode="XYZ"):
         super().__init__()
         self.mode = mode.upper()
+        assert self.mode in ("XYZ", "LAB"), \
+            f"SpectralFeatureEncoder: mode must be 'XYZ' or 'LAB', got '{mode}'"
 
         if self.mode == "LAB":
-            # Fixed true LAB conversion (non-linear, not learnable)
-            # Learnable 1x1 conv sits ON TOP of real LAB features
-            self.register_buffer("xyz_kernel", torch.tensor([
-                [0.4124, 0.3576, 0.1805],
-                [0.2126, 0.7152, 0.0722],
-                [0.0193, 0.1192, 0.9505],
-            ]).view(3, 3, 1, 1))
-            self.register_buffer("d65", torch.tensor([0.95047, 1.00000, 1.08883]).view(1, 3, 1, 1))
-            self.encoder = nn.Conv2d(3, c2, kernel_size=1, bias=False)
-            nn.init.eye_(self.encoder.weight.view(c2, 3))  # identity start, learns from LAB space
+            # ----------------------------------------------------------------
+            # PART 1: Fixed RGB -> LAB conversion (frozen, no gradients)
+            # This is the exact same math as cv2.COLOR_BGR2Lab.
+            # The network cannot change this — it is physics.
+            # ----------------------------------------------------------------
+            self.xyz_conv = nn.Conv2d(3, 3, kernel_size=1, stride=1, padding=0, bias=False)
+            with torch.no_grad():
+                self.xyz_conv.weight.copy_(torch.tensor([
+                    [0.4124, 0.3576, 0.1805],  # -> X
+                    [0.2126, 0.7152, 0.0722],  # -> Y (Luminance)
+                    [0.0193, 0.1192, 0.9505],  # -> Z
+                ]).view(3, 3, 1, 1))
+            for p in self.xyz_conv.parameters():
+                p.requires_grad = False  # frozen forever
+
+            # D65 standard illuminant white point for normalization
+            self.register_buffer("d65", torch.tensor(
+                [0.95047, 1.00000, 1.08883]
+            ).view(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 2: Learnable LAB channel scales (the "sliders")
+            # Initialized at 1.0 = neutral (no scaling), but can be adjusted by the network during training.
+            # During training, gradient descent finds the optimal scale for
+            # each channel:
+            #   lab_scale[0] -> how much L* (lightness) matters
+            #   lab_scale[1] -> how much a* (green<->red) matters  <- likely dominant for pests
+            #   lab_scale[2] -> how much b* (blue<->yellow) matters
+            # This is like automated by the loss function.
+            # ----------------------------------------------------------------
+            self.lab_scale = nn.Parameter(torch.ones(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 3: Learnable 1x1 conv encoder
+            # Takes the scaled LAB features and produces output feature channels
+            # for the downstream backbone. Initialized as identity so training
+            # starts from a neutral state.
+            # ----------------------------------------------------------------
+            self.encoder = nn.Conv2d(3, c2, kernel_size=1, stride=1, padding=0, bias=False)
+            nn.init.eye_(self.encoder.weight.view(c2, 3))
 
         else:  # XYZ
-            assert self.mode in self.INIT_WEIGHTS
-            self.encoder = nn.Conv2d(c1, c2, kernel_size=1, bias=False)
+            # ----------------------------------------------------------------
+            # XYZ mode: single learnable 1x1 conv initialized with the full
+            # CIE XYZ matrix. The network can drift from this initialization
+            # during training but starts with physically meaningful weights.
+            # ----------------------------------------------------------------
+            self.encoder = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0, bias=False)
             with torch.no_grad():
-                self.encoder.weight.copy_(
-                    self.INIT_WEIGHTS[self.mode].view(c2, c1, 1, 1)
-                )
+                self.encoder.weight.copy_(torch.tensor([
+                    [0.4124, 0.3576, 0.1805],  # X (Red-Green Chroma)
+                    [0.2126, 0.7152, 0.0722],  # Y (Luminance)
+                    [0.0193, 0.1192, 0.9505],  # Z (Blue-Yellow Chroma)
+                ]).view(c2, c1, 1, 1))
 
     def _rgb_to_lab(self, x):
-        # Step 0: Remove sRGB gamma -> linear light
+        """
+        Mathematically correct sRGB -> CIE LAB conversion.
+        Identical pipeline to cv2.COLOR_BGR2Lab on float32 input.
+        No learnable parameters here — pure fixed math.
+        """
+        # Step 0: Remove sRGB gamma encoding -> linear light
+        # sRGB from cameras/Roboflow is gamma-encoded (~2.2 curve).
+        # The XYZ matrix only valid on linear light, so we linearize first.
         x = torch.where(
             x <= 0.04045,
             x / 12.92,
             ((x + 0.055) / 1.055).pow(2.4)
         )
-        
-        # Step 1: Linear RGB -> XYZ
-        xyz = F.conv2d(x, self.xyz_kernel)
-        
+
+        # Step 1: Linear RGB -> XYZ (frozen 1x1 conv = matrix multiply)
+        xyz = self.xyz_conv(x)
+
         # Step 2: Normalize by D65 white point
         xyz = xyz / self.d65
-        
-        # Step 3: Cube root nonlinearity
-        xyz = torch.where(xyz > 0.008856, xyz.pow(1/3), 7.787 * xyz + 16/116)
-        
-        # Step 4: L*, a*, b*
-        L = (116 * xyz[:, 1:2]) - 16
-        a = 500 * (xyz[:, 0:1] - xyz[:, 1:2])
-        b = 200 * (xyz[:, 1:2] - xyz[:, 2:3])
-        return torch.cat([L / 100, a / 128, b / 128], dim=1)
+
+        # Step 3: Apply CIE f() — the cube root nonlinearity
+        xyz = torch.where(
+            xyz > 0.008856,
+            xyz.pow(1.0 / 3.0),
+            7.787 * xyz + 16.0 / 116.0
+        )
+
+        # Step 4: Compute L*, a*, b* and normalize to roughly [-1, 1]
+        L = (116.0 * xyz[:, 1:2] - 16.0)  / 100.0   # L* in [0,100]   -> [0, 1]
+        a = (500.0 * (xyz[:, 0:1] - xyz[:, 1:2]))    / 128.0  # a* in [-128,127] -> ~[-1, 1]
+        b = (200.0 * (xyz[:, 1:2] - xyz[:, 2:3]))    / 128.0  # b* in [-128,127] -> ~[-1, 1]
+
+        return torch.cat([L, a, b], dim=1)
 
     def forward(self, x):
         if self.mode == "LAB":
+            # Fixed math: RGB -> true LAB (no gradients flow here)
             x = self._rgb_to_lab(x)
-        return self.encoder(x)
+
+            # Learnable sliders: scale each LAB channel is learn by network independently
+            x = x * self.lab_scale
+
+            # Learnable encoder: produce output features from scaled LAB
+            return self.encoder(x)
+
+        else:  # XYZ
+            return self.encoder(x)
