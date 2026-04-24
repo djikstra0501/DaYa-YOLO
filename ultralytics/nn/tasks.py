@@ -1895,23 +1895,26 @@ def parse_model(d, ch, verbose=True):
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
         if m in base_modules:
             c1, c2 = ch[f], args[0]
-            if c2 != nc and m is not SpectralFeatureEncoder:  # if c2 not equal to number of classes (i.e. for Classify() output)
+            if c2 != nc and m is not SpectralFeatureEncoder:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
-            if m is C2fAttn:  # set 1) embed channels and 2) num heads
+            if m is C2fAttn:
                 args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
                 args[2] = int(max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2])
-
-            args = [c1, c2, *args[1:]]
+            if m is SpectralFeatureEncoder:
+                mode = args[1] if len(args) > 1 else "XYZ"
+                args = [c1, c2, mode]
+            else:
+                args = [c1, c2, *args[1:]]
             if m in repeat_modules:
-                args.insert(2, n)  # number of repeats
+                args.insert(2, n)
                 n = 1
-            if m is C3k2:  # for M/L/X sizes
+            if m is C3k2:
                 legacy = False
                 if scale in "mlx":
                     args[3] = True
             if m is A2C2f:
                 legacy = False
-                if scale in "lx":  # for L/X sizes
+                if scale in "lx":
                     args.extend((True, 1.2))
             if m is C2fCIB:
                 legacy = False

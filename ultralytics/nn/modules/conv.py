@@ -1161,22 +1161,68 @@ class GnConv(nn.Module):
 class SpectralFeatureEncoder(nn.Module):
     """
     Learnable Spectral Encoder for Rice Pest Detection.
-    Isolates chromaticity from luminance using a 1x1 convolution.
-    Initialized with CIE XYZ standard matrix weights.
+    This module can be initialized to perform RGB→XYZ or RGB→LAB conversion,
+    and the convolutional weights can be fine-tuned during training to optimize.
+    
+    The purpose of this module is to allow the model to learn an optimal spectral transformation
+    that may enhance feature extraction for pest detection, while starting from a known color space conversion.
     """
-    def __init__(self, c1=3, c2=2): 
+    INIT_WEIGHTS = {
+        "XYZ": torch.tensor([
+            [0.4124, 0.3576, 0.1805],
+            [0.2126, 0.7152, 0.0722],
+            [0.0193, 0.1192, 0.9505],
+        ]),
+    }
+
+    def __init__(self, c1=3, c2=3, mode="XYZ"):
         super().__init__()
-        self.encoder = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0, bias=False)
-        
-        # Professional Initialization: CIE XYZ Matrix
-        # [0.4124, 0.3576, 0.1805] -> X
-        # [0.2126, 0.7152, 0.0722] -> Y
-        with torch.no_grad():
-            xyz_weights = torch.tensor([
+        self.mode = mode.upper()
+
+        if self.mode == "LAB":
+            # Fixed true LAB conversion (non-linear, not learnable)
+            # Learnable 1x1 conv sits ON TOP of real LAB features
+            self.register_buffer("xyz_kernel", torch.tensor([
                 [0.4124, 0.3576, 0.1805],
-                [0.2126, 0.7152, 0.0722]
-            ])
-            self.encoder.weight.copy_(xyz_weights.view(c2, c1, 1, 1))
+                [0.2126, 0.7152, 0.0722],
+                [0.0193, 0.1192, 0.9505],
+            ]).view(3, 3, 1, 1))
+            self.register_buffer("d65", torch.tensor([0.95047, 1.00000, 1.08883]).view(1, 3, 1, 1))
+            self.encoder = nn.Conv2d(3, c2, kernel_size=1, bias=False)
+            nn.init.eye_(self.encoder.weight.view(c2, 3))  # identity start, learns from LAB space
+
+        else:  # XYZ
+            assert self.mode in self.INIT_WEIGHTS
+            self.encoder = nn.Conv2d(c1, c2, kernel_size=1, bias=False)
+            with torch.no_grad():
+                self.encoder.weight.copy_(
+                    self.INIT_WEIGHTS[self.mode].view(c2, c1, 1, 1)
+                )
+
+    def _rgb_to_lab(self, x):
+        # Step 0: Remove sRGB gamma -> linear light
+        x = torch.where(
+            x <= 0.04045,
+            x / 12.92,
+            ((x + 0.055) / 1.055).pow(2.4)
+        )
+        
+        # Step 1: Linear RGB -> XYZ
+        xyz = F.conv2d(x, self.xyz_kernel)
+        
+        # Step 2: Normalize by D65 white point
+        xyz = xyz / self.d65
+        
+        # Step 3: Cube root nonlinearity
+        xyz = torch.where(xyz > 0.008856, xyz.pow(1/3), 7.787 * xyz + 16/116)
+        
+        # Step 4: L*, a*, b*
+        L = (116 * xyz[:, 1:2]) - 16
+        a = 500 * (xyz[:, 0:1] - xyz[:, 1:2])
+        b = 200 * (xyz[:, 1:2] - xyz[:, 2:3])
+        return torch.cat([L / 100, a / 128, b / 128], dim=1)
 
     def forward(self, x):
+        if self.mode == "LAB":
+            x = self._rgb_to_lab(x)
         return self.encoder(x)
