@@ -1242,32 +1242,33 @@ class SpectralFeatureEncoder(nn.Module):
         Identical pipeline to cv2.COLOR_BGR2Lab on float32 input.
         No learnable parameters here — pure fixed math.
         """
-        # Step 0: Remove sRGB gamma encoding -> linear light
-        # sRGB from cameras/Roboflow is gamma-encoded (~2.2 curve).
-        # The XYZ matrix only valid on linear light, so we linearize first.
+        # Step 0: Clamp input to valid sRGB range before gamma removal and Remove sRGB gamma safely
+        x = x.clamp(0.0, 1.0)
         x = torch.where(
             x <= 0.04045,
             x / 12.92,
-            ((x + 0.055) / 1.055).pow(2.4)
+            ((x + 0.055) / 1.055).pow(2.4).clamp(min=0.0)
         )
 
-        # Step 1: Linear RGB -> XYZ (frozen 1x1 conv = matrix multiply)
-        xyz = self.xyz_conv(x)
+        # Step 1: Linear RGB -> XYZ
+        xyz = self.xyz_conv(x).clamp(min=1e-8)  # never zero, protects pow(1/3)
 
-        # Step 2: Normalize by D65 white point
+        # Step 2: Normalize by D65
         xyz = xyz / self.d65
 
-        # Step 3: Apply CIE f() — the cube root nonlinearity
+        # Step 3: Cube root — safe version
+        # clamp before pow so we never take root of zero or negative
+        safe_xyz = xyz.clamp(min=0.008857)  # just above the threshold
         xyz = torch.where(
             xyz > 0.008856,
-            xyz.pow(1.0 / 3.0),
+            safe_xyz.pow(1.0 / 3.0),
             7.787 * xyz + 16.0 / 116.0
         )
 
-        # Step 4: Compute L*, a*, b* and normalize to roughly [-1, 1]
-        L = (116.0 * xyz[:, 1:2] - 16.0)  / 100.0   # L* in [0,100]   -> [0, 1]
-        a = (500.0 * (xyz[:, 0:1] - xyz[:, 1:2]))    / 128.0  # a* in [-128,127] -> ~[-1, 1]
-        b = (200.0 * (xyz[:, 1:2] - xyz[:, 2:3]))    / 128.0  # b* in [-128,127] -> ~[-1, 1]
+        # Step 4: L*, a*, b*
+        L = (116.0 * xyz[:, 1:2] - 16.0) / 100.0
+        a = (500.0 * (xyz[:, 0:1] - xyz[:, 1:2])) / 128.0
+        b = (200.0 * (xyz[:, 1:2] - xyz[:, 2:3])) / 128.0
 
         return torch.cat([L, a, b], dim=1)
 
@@ -1277,7 +1278,7 @@ class SpectralFeatureEncoder(nn.Module):
             x = self._rgb_to_lab(x)
 
             # Learnable sliders: scale each LAB channel is learn by network independently
-            x = x * self.lab_scale
+            x = x * self.lab_scale.clamp(min=0.01)  # prevent negative scaling
 
             # Learnable encoder: produce output features from scaled LAB
             return self.encoder(x)
