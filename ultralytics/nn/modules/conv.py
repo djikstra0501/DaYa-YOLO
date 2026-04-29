@@ -1222,25 +1222,70 @@ class SpectralFeatureEncoder(nn.Module):
             self.encoder = nn.Conv2d(3, c2, kernel_size=1, stride=1, padding=0, bias=False)
             nn.init.eye_(self.encoder.weight.view(c2, 3))
 
-        else:  # XYZ
+        else:  # XYZ with strict frozen conversion, same logic as LAB
             # ----------------------------------------------------------------
-            # XYZ mode: single learnable 1x1 conv initialized with the full
-            # CIE XYZ matrix. The network can drift from this initialization
-            # during training but starts with physically meaningful weights.
+            # PART 1: Fixed sRGB -> XYZ conversion (frozen, no gradients)
+            # Includes gamma linearization, same as LAB pipeline
+            # but stops before the cube root nonlinearity
             # ----------------------------------------------------------------
-            self.encoder = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0, bias=False)
+            self.xyz_conv = nn.Conv2d(3, 3, kernel_size=1, stride=1, padding=0, bias=False)
             with torch.no_grad():
-                self.encoder.weight.copy_(torch.tensor([
-                    [0.4124, 0.3576, 0.1805],  # X (Red-Green Chroma)
+                self.xyz_conv.weight.copy_(torch.tensor([
+                    [0.4124, 0.3576, 0.1805],  # X
                     [0.2126, 0.7152, 0.0722],  # Y (Luminance)
-                    [0.0193, 0.1192, 0.9505],  # Z (Blue-Yellow Chroma)
-                ]).view(c2, c1, 1, 1))
+                    [0.0193, 0.1192, 0.9505],  # Z
+                ]).view(3, 3, 1, 1))
+            for p in self.xyz_conv.parameters():
+                p.requires_grad = False  # frozen forever, same as LAB
+
+            # Normalize output to roughly [-1, 1] for training stability
+            # XYZ values after D65 normalization are in [0, ~1.08]
+            # divide by 1.0 keeps scale, just making it explicit
+            self.register_buffer("xyz_scale", torch.tensor(
+                [1.0 / 0.95047, 1.0 / 1.00000, 1.0 / 1.08883]
+            ).view(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 2: Learnable XYZ channel scales (same as lab_scale)
+            # xyz_scale[0] -> how much X matters
+            # xyz_scale[1] -> how much Y (luminance) matters
+            # xyz_scale[2] -> how much Z matters
+            # ----------------------------------------------------------------
+            self.xyz_scale = nn.Parameter(torch.ones(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 3: Learnable encoder, same as LAB
+            # ----------------------------------------------------------------
+            self.encoder = nn.Conv2d(3, c2, kernel_size=1, stride=1, padding=0, bias=False)
+            nn.init.eye_(self.encoder.weight.view(c2, 3))
+    
+    def _srgb_to_xyz(self, x):
+        """
+        Mathematically correct sRGB -> CIE XYZ conversion.
+        Same gamma linearization as LAB pipeline,
+        stops before cube root nonlinearity.
+        """
+        # Step 0: Clamp and remove sRGB gamma
+        x = x.clamp(0.0, 1.0)
+        x = torch.where(
+            x <= 0.04045,
+            x / 12.92,
+            ((x + 0.055) / 1.055).pow(2.4).clamp(min=0.0)
+        )
+
+        # Step 1: Linear RGB -> XYZ (frozen conv)
+        xyz = self.xyz_conv(x).clamp(min=0.0)
+
+        # Step 2: Normalize by D65 white point (same as LAB)
+        xyz = xyz * self.xyz_scale
+
+        return xyz
 
     def _rgb_to_lab(self, x):
         """
         Mathematically correct sRGB -> CIE LAB conversion.
         Identical pipeline to cv2.COLOR_BGR2Lab on float32 input.
-        No learnable parameters here — pure fixed math.
+        No learnable parameters here pure fixed math.
         """
         # Step 0: Clamp input to valid sRGB range before gamma removal and Remove sRGB gamma safely
         x = x.clamp(0.0, 1.0)
@@ -1256,7 +1301,7 @@ class SpectralFeatureEncoder(nn.Module):
         # Step 2: Normalize by D65
         xyz = xyz / self.d65
 
-        # Step 3: Cube root — safe version
+        # Step 3: Cube root with safe clamping to avoid zero/negative issues
         # clamp before pow so we never take root of zero or negative
         safe_xyz = xyz.clamp(min=0.008857)  # just above the threshold
         xyz = torch.where(
@@ -1283,5 +1328,7 @@ class SpectralFeatureEncoder(nn.Module):
             # Learnable encoder: produce output features from scaled LAB
             return self.encoder(x)
 
-        else:  # XYZ
+        else:  # XYZ with same logic as LAB but no cube root nonlinearity
+            x = self._srgb_to_xyz(x)
+            x = x * self.xyz_scale.clamp(min=0.01)
             return self.encoder(x)
