@@ -14,7 +14,7 @@ scales: # model compound scaling constants, i.e. 'model=yolo11n.yaml' will call 
   l: [1.00, 1.00, 512] # summary: 357 layers, 25372160 parameters, 25372144 gradients, 87.6 GFLOPs
   x: [1.00, 1.50, 512] # summary: 357 layers, 56966176 parameters, 56966160 gradients, 196.0 GFLOPs
 
-# DaYa-YOLO
+# DaYa-YOLO (Decoupled Auxiliary hYbrid-Chromatic Architecture)
 backbone:
   # [from, repeats, module, args]
   - [-1, 1, nn.Identity, []]      # 0: Raw Input Image [3, H, W]
@@ -40,7 +40,7 @@ backbone:
   - [-1, 1, Conv, [64, 3, 2]]       # 16: Aux P4/16 (Color Clue P4)
   - [-1, 1, Conv, [64, 3, 2]]       # 17: Aux P5/32 (Color Clue P5)
 
-# CP-YOLO11 Head (Triple-Fusion Strategy)
+# DaYa-YOLO Head (Triple-Fusion Strategy)
 head:
   - [11, 1, nn.Upsample, [None, 2, "nearest"]] # 18: Up-P5 (index 11 is Main P5)
   - [[-1, 6, 16], 1, Concat, [1]]   # 19: Fuse [Up-P5 + Main P4 + Aux P4]
