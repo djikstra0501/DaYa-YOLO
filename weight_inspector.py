@@ -40,9 +40,8 @@ def inspect_spectral_encoder(pt_path):
 
 
 models = {
-    "LAB Color":  "propose/train/12/propose_daya_color_lab.pt",
-    "Strict XYZ": "propose/train/13/propose_daya_color_xyz.pt",
-    "Full XYZ":   "propose/train/11/best.pt",
+    "LAB Color":  "propose_daya_color_lab.pt",
+    "Strict XYZ": "propose_daya_color_xyz.pt",
 }
 
 for name, path in models.items():

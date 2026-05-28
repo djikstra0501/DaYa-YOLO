@@ -107,4 +107,4 @@ def run_tri_visualizer(image_path):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    run_tri_visualizer('pest_example.png')
+    run_tri_visualizer('img0858.jpg')
