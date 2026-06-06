@@ -95,6 +95,7 @@ from .conv import (
     SCM,
     CCS,
     SpectralFeatureEncoder,
+    SEAtt,
 )
 from .head import (
     OBB,
@@ -221,4 +222,5 @@ __all__ = (
     "C3k2Spa",
     "C3k2Cha",
     "SpectralFeatureEncoder",
+    "SEAtt",
 )

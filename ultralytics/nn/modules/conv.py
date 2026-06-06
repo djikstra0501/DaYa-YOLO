@@ -33,6 +33,7 @@ __all__ = (
     "GnConv",
     "SpatialAttention2",
     "SpectralFeatureEncoder",
+    "SEAtt"
 )
 
 
@@ -1332,3 +1333,36 @@ class SpectralFeatureEncoder(nn.Module):
             x = self._srgb_to_xyz(x)
             x = x * self.xyz_scale.clamp(min=0.01)
             return self.encoder(x)
+
+class SEAtt(nn.Module):
+    """
+    Squeeze-and-Excitation Attention Block.
+    Learns channel-wise importance weights by squeezing spatial
+    information into channel descriptors then exciting (scaling)
+    channels based on learned importance.
+
+    Args:
+        c1 (int): Input channels.
+        reduction (int): Reduction ratio for bottleneck. Default 16.
+
+    YAML usage:
+        - [-1, 1, SEAttention, []]        # default reduction=16
+        - [-1, 1, SEAttention, [8]]       # reduction=8 (wider bottleneck)
+    """
+    def __init__(self, c1, reduction=16):
+        super().__init__()
+        c_squeezed = max(1, c1 // reduction)
+
+        self.se = nn.Sequential(
+            # Squeeze: global average pool → (B, C, 1, 1)
+            nn.AdaptiveAvgPool2d(1),
+            # Excitation: two FC layers with bottleneck
+            nn.Conv2d(c1, c_squeezed, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c_squeezed, c1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # scale each channel by its learned importance weight
+        return x * self.se(x)

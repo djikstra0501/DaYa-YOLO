@@ -90,6 +90,7 @@ from ultralytics.nn.modules import (
     C3k2Spa,
     C3k2Cha,
     SpectralFeatureEncoder,
+    SEAtt,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1850,6 +1851,7 @@ def parse_model(d, ch, verbose=True):
             C3k2Spa,
             C3k2Cha,
             SpectralFeatureEncoder,
+            SEAtt,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1903,6 +1905,12 @@ def parse_model(d, ch, verbose=True):
             if m is SpectralFeatureEncoder:
                 mode = args[1] if len(args) > 1 else "XYZ"
                 args = [c1, c2, mode]
+            elif m is SEAtt:
+                # SE doesn't change channel count, c2 = c1
+                # args[0] is reduction ratio if provided, else default 16
+                reduction = args[0] if len(args) > 0 else 16
+                c2 = c1  # SE preserves channel dimensions
+                args = [c1, reduction]
             else:
                 args = [c1, c2, *args[1:]]
             if m in repeat_modules:
