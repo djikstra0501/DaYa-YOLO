@@ -33,7 +33,8 @@ __all__ = (
     "GnConv",
     "SpatialAttention2",
     "SpectralFeatureEncoder",
-    "SEAtt"
+    "SEAtt",
+    "LSKA",
 )
 
 
@@ -1366,3 +1367,64 @@ class SEAtt(nn.Module):
     def forward(self, x):
         # scale each channel by its learned importance weight
         return x * self.se(x)
+
+class LSKA(nn.Module):
+    """
+    Large Separable Kernel Attention module.
+
+    Reference: https://github.com/StevenLauHKHK/Large-Separable-Kernel-Attention
+    Decomposes large-kernel depthwise attention into cascaded 1D horizontal/vertical convs.
+    Acts as a spatial attention gate: input * attention_map.
+
+    Args:
+        dim (int): number of input/output channels.
+        k_size (int): effective large kernel size. One of [7, 11, 23, 35, 41, 53].
+    """
+
+    def __init__(self, dim, k_size=23):
+        super().__init__()
+        self.k_size = k_size
+
+        if k_size == 7:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 3), padding=(0, 1), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (3, 1), padding=(1, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 3), padding=(0, 2), groups=dim, dilation=2)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (3, 1), padding=(2, 0), groups=dim, dilation=2)
+        elif k_size == 11:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 3), padding=(0, 1), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (3, 1), padding=(1, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 4), groups=dim, dilation=2)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(4, 0), groups=dim, dilation=2)
+        elif k_size == 23:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 7), padding=(0, 9), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (7, 1), padding=(9, 0), groups=dim, dilation=3)
+        elif k_size == 35:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 11), padding=(0, 15), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (11, 1), padding=(15, 0), groups=dim, dilation=3)
+        elif k_size == 41:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 13), padding=(0, 18), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (13, 1), padding=(18, 0), groups=dim, dilation=3)
+        elif k_size == 53:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 17), padding=(0, 24), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (17, 1), padding=(24, 0), groups=dim, dilation=3)
+        else:
+            raise ValueError(f"k_size must be one of [7, 11, 23, 35, 41, 53], got {k_size}")
+
+        self.conv1 = nn.Conv2d(dim, dim, 1)
+
+    def forward(self, x):
+        u = x.clone()
+        attn = self.DW_conv_h(x)
+        attn = self.DW_conv_v(attn)
+        attn = self.DW_D_conv_h(attn)
+        attn = self.DW_D_conv_v(attn)
+        attn = self.conv1(attn)
+        return u * attn

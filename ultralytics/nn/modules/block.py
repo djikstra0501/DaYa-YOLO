@@ -6,10 +6,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Tuple
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, GSConv, GnConv, autopad, SpatialAttention, ECA
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, GSConv, GnConv, autopad, SpatialAttention, ECA, LSKA
 from .transformer import TransformerBlock
 
 __all__ = (
@@ -63,6 +64,8 @@ __all__ = (
     "HorBlock",
     "C3k2Spa",
     "C3k2Cha",
+    "BiLevelRoutingAttention",
+    "C3k2BRA",
 )
 
 
@@ -2454,4 +2457,227 @@ class C3k2Cha(nn.Module):
 
     def forward(self, x):
         return self.block(self.attention(x))
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Bi-Level Routing Attention (BRA) — CVPR 2023
+# Original: https://github.com/rayleizhu/BiFormer  (MIT License)
+# Ported to block.py by: djikstra0501 (2026-06-15)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# internal helpers
+
+def _bra_grid2seq(x: torch.Tensor, region_size: Tuple[int, int], num_heads: int):
+    """BCHW → (B, nhead, nregion, region_area, head_dim)"""
+    B, C, H, W = x.size()
+    rh, rw = H // region_size[0], W // region_size[1]
+    x = x.view(B, num_heads, C // num_heads, rh, region_size[0], rw, region_size[1])
+    x = torch.einsum("bmdhpwq->bmhwpqd", x).flatten(2, 3).flatten(-3, -2)
+    return x, rh, rw
+
+
+def _bra_seq2grid(x: torch.Tensor, rh: int, rw: int, region_size: Tuple[int, int]):
+    """(B, nhead, nregion, region_area, head_dim) → BCHW"""
+    B, nhead, _nr, _ra, head_dim = x.size()
+    x = x.view(B, nhead, rh, rw, region_size[0], region_size[1], head_dim)
+    x = torch.einsum("bmhwpqd->bmdhpwq", x).reshape(
+        B, nhead * head_dim, rh * region_size[0], rw * region_size[1]
+    )
+    return x
+
+
+def _bra_regional_attn(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    scale: float,
+    region_graph: torch.Tensor,   # (B, nhead, q_nregion, topk)
+    region_size: Tuple[int, int],
+    auto_pad: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Token-to-token attention restricted to top-k routed regions."""
+    B, nhead, q_nregion, topk = region_graph.size()
+    Hq = Wq = 0
+    qpb = qpr = 0
+
+    if auto_pad:
+        _, _, Hq, Wq = query.size()
+        qpb = (region_size[0] - Hq % region_size[0]) % region_size[0]
+        qpr = (region_size[1] - Wq % region_size[1]) % region_size[1]
+        if qpb > 0 or qpr > 0:
+            query = F.pad(query, (0, qpr, 0, qpb))
+            key   = F.pad(key,   (0, qpr, 0, qpb))
+            value = F.pad(value, (0, qpr, 0, qpb))
+
+    query, q_rh, q_rw = _bra_grid2seq(query, region_size, nhead)
+    key,   _,    _    = _bra_grid2seq(key,   region_size, nhead)
+    value, _,    _    = _bra_grid2seq(value, region_size, nhead)
+
+    _B, _nh, kv_nregion, kv_reg_size, head_dim = key.size()
+    idx_exp = (
+        region_graph.view(B, nhead, q_nregion, topk, 1, 1)
+        .expand(-1, -1, -1, -1, kv_reg_size, head_dim)
+    )
+    kv_base = key.view(B, nhead, 1, kv_nregion, kv_reg_size, head_dim).expand(
+        -1, -1, query.size(2), -1, -1, -1
+    )
+    key_g   = torch.gather(kv_base, dim=3, index=idx_exp)
+    val_base = value.view(B, nhead, 1, kv_nregion, kv_reg_size, head_dim).expand(
+        -1, -1, query.size(2), -1, -1, -1
+    )
+    value_g = torch.gather(val_base, dim=3, index=idx_exp)
+
+    attn   = (query * scale) @ key_g.flatten(-3, -2).transpose(-1, -2)
+    attn   = torch.softmax(attn, dim=-1)
+    output = attn @ value_g.flatten(-3, -2)
+    output = _bra_seq2grid(output, q_rh, q_rw, region_size)
+
+    if auto_pad and (qpb > 0 or qpr > 0):
+        output = output[:, :, :Hq, :Wq]
+
+    return output, attn
+
+class BiLevelRoutingAttention(nn.Module):
+    """
+    Bi-Level Routing Attention (BRA) — NCHW in/out, plug-and-play.
+
+    Args:
+        dim (int): Input channel count.
+        num_heads (int): Attention heads. dim must be divisible by num_heads.
+        n_win (int): Windows per side (total = n_win²). Default 7.
+        topk (int): Windows each query region attends to. Default 4.
+        side_dwconv (int): Kernel size of the local-context depthwise conv
+            applied to values (LCE). Set 0 to disable. Default 3.
+        auto_pad (bool): Zero-pad when H/W not divisible by window size.
+            Keep True for detection (feature maps vary per FPN level).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        n_win: int = 7,
+        topk: int = 4,
+        side_dwconv: int = 3,
+        auto_pad: bool = True,
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, f"dim {dim} must be divisible by num_heads {num_heads}"
+        self.num_heads = num_heads
+        self.scale     = dim ** -0.5
+        self.topk      = topk
+        self.n_win     = n_win
+        self.auto_pad  = auto_pad
+
+        self.lepe = (
+            nn.Conv2d(dim, dim, kernel_size=side_dwconv,
+                      padding=side_dwconv // 2, groups=dim, bias=False)
+            if side_dwconv > 0 else nn.Identity()
+        )
+        self.qkv = nn.Conv2d(dim, 3 * dim, kernel_size=1, bias=False)
+        self.proj = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        rh = max(1, H // self.n_win)
+        rw = max(1, W // self.n_win)
+        region_size = (rh, rw)
+
+        q, k, v = self.qkv(x).chunk(3, dim=1)
+
+        # Region-level routing (detached — no gradient through routing step)
+        q_r = F.avg_pool2d(q.detach(), kernel_size=region_size,
+                            ceil_mode=True, count_include_pad=False)
+        k_r = F.avg_pool2d(k.detach(), kernel_size=region_size,
+                            ceil_mode=True, count_include_pad=False)
+
+        q_r = q_r.permute(0, 2, 3, 1).flatten(1, 2)   # (B, n_win², C)
+        k_r = k_r.flatten(2, 3)                         # (B, C, n_win²)
+        a_r = q_r @ k_r                                  # (B, n_win², n_win²)
+
+        _, idx_r = torch.topk(a_r, k=self.topk, dim=-1) # (B, n_win², topk)
+        idx_r = idx_r.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
+
+        # Token-level attention within routed regions
+        out, _ = _bra_regional_attn(q, k, v, self.scale, idx_r,
+                                     region_size, self.auto_pad)
+        # Local context enhancement on values
+        lepe = self.lepe(v)
+        out = self.proj(out + lepe)
+        return out
+
+
+class C3k2BRA(C2f):
+    """
+    C3k2 variant with Bi-Level Routing Attention inside each bottleneck.
+
+    Inherits C2f so channel arithmetic, forward(), and YAML parsing all
+    work identically to C3k2 — parse_model needs zero extra handling.
+
+    YAML usage (same positional args as C3k2):
+        # [from, repeats, module,   [c2,  shortcut, e  ]]
+        - [-1,   2,       C3k2BRA, [512, False,    0.5]]
+
+    You can also pass BRA-specific kwargs after e if you want to tune:
+        - [-1, 2, C3k2BRA, [512, False, 0.5, 7, 4, 4]]
+                                              ↑    ↑  ↑
+                                           n_win  heads topk
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        shortcut: bool = False,
+        g: int = 1,       # unused — kept so YAML arg positions match C3k2
+        e: float = 0.5,
+        n_win: int = 7,
+        num_heads: int = 4,
+        topk: int = 4,
+        side_dwconv: int = 3,
+    ):
+        super().__init__(c1, c2, n, shortcut, g, e)  # sets self.c, cv1, cv2
+        # Override the bottleneck list with BRA-bottlenecks
+        self.m = nn.ModuleList(
+            _BRABottleneck(
+                self.c, self.c,
+                shortcut=shortcut,
+                n_win=n_win,
+                num_heads=min(num_heads, self.c // 32),  # guard: heads ≤ c/32
+                topk=topk,
+                side_dwconv=side_dwconv,
+            )
+            for _ in range(n)
+        )
+
+
+class _BRABottleneck(nn.Module):
+    """Single bottleneck: Conv-BN-SiLU → BRA → Conv-BN-SiLU (+ residual)."""
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        shortcut: bool = True,
+        n_win: int = 7,
+        num_heads: int = 4,
+        topk: int = 4,
+        side_dwconv: int = 3,
+    ):
+        super().__init__()
+        self.cv1  = Conv(c1, c2, 1)   # uses the Conv already imported in block.py
+        self.attn = BiLevelRoutingAttention(
+            dim=c2,
+            num_heads=max(1, num_heads),
+            n_win=n_win,
+            topk=topk,
+            side_dwconv=side_dwconv,
+            auto_pad=True,
+        )
+        self.cv2  = Conv(c2, c2, 1)
+        self.add  = shortcut and c1 == c2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.cv2(self.attn(self.cv1(x)))
+        return x + y if self.add else y
 

@@ -70,6 +70,8 @@ from .block import (
     HorBlock,
     C3k2Spa,
     C3k2Cha,
+    BiLevelRoutingAttention,
+    C3k2BRA,
 )
 from .conv import (
     CBAM,
@@ -96,6 +98,7 @@ from .conv import (
     CCS,
     SpectralFeatureEncoder,
     SEAtt,
+    LSKA,
 )
 from .head import (
     OBB,
@@ -223,4 +226,7 @@ __all__ = (
     "C3k2Cha",
     "SpectralFeatureEncoder",
     "SEAtt",
+    "BiLevelRoutingAttention",
+    "C3k2BRA",
+    "LSKA",
 )

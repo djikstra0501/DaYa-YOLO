@@ -91,6 +91,9 @@ from ultralytics.nn.modules import (
     C3k2Cha,
     SpectralFeatureEncoder,
     SEAtt,
+    BiLevelRoutingAttention,
+    C3k2BRA,
+    LSKA,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1851,6 +1854,7 @@ def parse_model(d, ch, verbose=True):
             C3k2Spa,
             C3k2Cha,
             SpectralFeatureEncoder,
+            C3k2BRA,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1871,6 +1875,7 @@ def parse_model(d, ch, verbose=True):
             C2PSA,
             A2C2f,
             C2fG,
+            C3k2BRA,
         }
     )
     
@@ -1955,6 +1960,9 @@ def parse_model(d, ch, verbose=True):
             c2 = c1
             reduction = args[0] if len(args) > 0 else 16
             args = [c1, reduction]
+        elif m is LSKA:
+            c1, c2 = ch[f], ch[f]
+            args = [c1, *args]  # args = [k_size] from yaml
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect, DualDDetect}
         ):
