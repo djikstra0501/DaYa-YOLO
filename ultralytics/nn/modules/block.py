@@ -66,6 +66,16 @@ __all__ = (
     "C3k2Cha",
     "BiLevelRoutingAttention",
     "C3k2BRA",
+    "EMA",
+    "ConvBNAct",
+    "TripletAttention",
+    "SimFusion_4in",
+    "IFM",
+    "SimFusion_3in",
+    "InjectionMultiSum_Auto_pool",
+    "PyramidPoolAgg",
+    "TopBasicLayer",
+    "AdvPoolFusion",
 )
 
 
@@ -2680,4 +2690,376 @@ class _BRABottleneck(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.cv2(self.attn(self.cv1(x)))
         return x + y if self.add else y
+
+class EMA(nn.Module):
+    """
+    Efficient Multi-Scale Attention (EMA) module — ICASSP 2023.
+
+    Splits channels into G groups (reshaped into the batch dim so all ops
+    are standard 2-D convolutions — no custom ops, fully DDP-safe), then
+    runs two parallel branches and fuses them with cross-spatial matmul.
+
+    Args:
+        channels (int): Number of input channels.  Must be divisible by factor.
+        factor   (int): Number of channel groups G.  Paper default = 32.
+    """
+
+    def __init__(self, channels: int, factor: int = 32):
+        super().__init__()
+
+        assert channels % factor == 0, (
+            f"EMA: channels ({channels}) must be divisible by factor ({factor}). "
+            f"Try factor=16 or adjust your channel count."
+        )
+
+        self.groups = factor
+        c_per_group = channels // factor   # c//g in the paper
+
+        # ── 1×1 branch ────────────────────────────────────────────────────
+        # Pool along H → shape (b*g, c//g, h, 1)
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        # Pool along W → shape (b*g, c//g, 1, w)
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        # Shared 1×1 conv on concatenated [pool_h ; pool_w] — no dim reduction
+        self.conv1x1 = nn.Conv2d(c_per_group, c_per_group,
+                                 kernel_size=1, bias=False)
+        # GroupNorm: 1 group over c//g channels (= LayerNorm over channels)
+        # This is rank-independent — safe for DDP across any world_size.
+        self.gn = nn.GroupNorm(num_groups=1, num_channels=c_per_group,
+                               affine=True)
+
+        # ── 3×3 branch ────────────────────────────────────────────────────
+        self.conv3x3 = nn.Conv2d(c_per_group, c_per_group,
+                                 kernel_size=3, padding=1, bias=False)
+
+        # ── Cross-spatial learning ─────────────────────────────────────────
+        # 2-D global avg pool to compress spatial → (b*g, c//g, 1, 1)
+        self.agp = nn.AdaptiveAvgPool2d((1, 1))
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x : (B, C, H, W)
+        Returns:
+            (B, C, H, W)  — same shape, re-weighted by cross-spatial attention
+        """
+        B, C, H, W = x.shape
+        G = self.groups
+        cg = C // G          # channels per group
+
+        # ── Feature grouping: reshape G groups into batch dim ──────────────
+        # (B, C, H, W) → (B*G, C//G, H, W)
+        xg = x.reshape(B * G, cg, H, W)
+
+        # ══ 1×1 BRANCH ════════════════════════════════════════════════════
+        # Horizontal pool: (B*G, cg, H, 1)
+        x_h = self.pool_h(xg)
+        # Vertical pool + transpose to match height dim for concat:
+        # pool_w → (B*G, cg, 1, W) → permute → (B*G, cg, W, 1)
+        x_w = self.pool_w(xg).permute(0, 1, 3, 2)
+
+        # Concat along height dim → (B*G, cg, H+W, 1), shared 1×1 conv
+        hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))
+
+        # Split back into h-part and w-part
+        x_h, x_w = torch.split(hw, [H, W], dim=2)
+
+        # Re-weight group features:
+        #   x_h.sigmoid(): (B*G, cg, H, 1)
+        #   x_w.permute(0,1,3,2).sigmoid(): (B*G, cg, 1, W)
+        # broadcast-multiply with xg → (B*G, cg, H, W)
+        x1 = self.gn(xg * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
+
+        # ══ 3×3 BRANCH ════════════════════════════════════════════════════
+        x2 = self.conv3x3(xg)   # (B*G, cg, H, W)
+
+        # ══ CROSS-SPATIAL LEARNING ════════════════════════════════════════
+        # --- First matmul: global-pool(x1) × flatten(x2) ---
+        # agp(x1) → (B*G, cg, 1, 1) → reshape → (B*G, 1, cg)  [row vector]
+        x11 = self.softmax(
+            self.agp(x1).reshape(B * G, 1, cg)
+        )
+        # x2 flatten spatial → (B*G, cg, H*W)
+        x12 = x2.reshape(B * G, cg, H * W)
+        # matmul: (B*G, 1, cg) × (B*G, cg, H*W) → (B*G, 1, H*W)
+
+        # --- Second matmul: global-pool(x2) × flatten(x1) ---
+        x21 = self.softmax(
+            self.agp(x2).reshape(B * G, 1, cg)
+        )
+        x22 = x1.reshape(B * G, cg, H * W)
+        # matmul: (B*G, 1, cg) × (B*G, cg, H*W) → (B*G, 1, H*W)
+
+        # Sum both attention maps → (B*G, 1, H, W)
+        weights = (
+            torch.bmm(x11, x12) + torch.bmm(x21, x22)
+        ).reshape(B * G, 1, H, W)
+
+        # ── Final gating and reshape back ─────────────────────────────────
+        # (B*G, cg, H, W) * sigmoid(B*G, 1, H, W) → broadcast over channels
+        out = (xg * weights.sigmoid()).reshape(B, C, H, W)
+        return out
+
+# YOLO-DP, DDP Safe
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class ConvBNAct(nn.Module):
+    """Conv + BN + activation (SiLU default)."""
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):
+        super().__init__()
+        if p is None:
+            p = k // 2
+        self.conv = nn.Conv2d(c1, c2, k, s, p, groups=g, bias=False)
+        self.bn   = nn.BatchNorm2d(c2)
+        self.act  = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
+
+    def forward(self, x):
+        return self.act(self.bn(self.conv(x)))
+
+
+# ---------------------------------------------------------------------------
+# TripletAttention  (backbone attention after SPPF)
+# ---------------------------------------------------------------------------
+
+class ZPool(nn.Module):
+    """Concatenate max and avg along channel dim → 2-channel spatial descriptor."""
+    def forward(self, x):
+        return torch.cat([x.max(dim=1, keepdim=True).values,
+                          x.mean(dim=1, keepdim=True)], dim=1)
+
+
+class AttentionGate(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.compress = ZPool()
+        self.conv     = ConvBNAct(2, 1, k=7, act=nn.Sigmoid())
+
+    def forward(self, x):
+        return x * self.conv(self.compress(x))
+
+
+class TripletAttention(nn.Module):
+    """
+    Triplet Attention — channel-preserving, no args needed from YAML.
+    Applies three attention branches: C×H, C×W, H×W.
+    """
+    def __init__(self, c1):  # c1 unused (channel-preserving), kept for parse_model compat
+        super().__init__()
+        self.cw = AttentionGate()   # permute → attend C×W
+        self.hc = AttentionGate()   # permute → attend H×C
+        self.hw = AttentionGate()   # attend H×W directly
+
+    def forward(self, x):
+        # Branch 1: rotate to (B, W, H, C) → treat W as "channel"
+        x_cw = self.cw(x.permute(0, 3, 2, 1)).permute(0, 3, 2, 1)
+        # Branch 2: rotate to (B, H, C, W) → treat H as "channel"
+        x_hc = self.hc(x.permute(0, 2, 1, 3)).permute(0, 2, 1, 3)
+        # Branch 3: standard spatial attention (H×W)
+        x_hw = self.hw(x)
+        return (x_cw + x_hc + x_hw) / 3.0
+
+
+# ---------------------------------------------------------------------------
+# SimFusion_4in  — Low-GD Feature Alignment Module (4 inputs)
+# ---------------------------------------------------------------------------
+
+class SimFusion_4in(nn.Module):
+    """
+    Align 4 backbone feature maps to the smallest spatial size via adaptive
+    avg-pool, then concatenate along channel dim.
+    Input: list of 4 tensors [P2, P3, P4, P5]
+    Output: single tensor (B, sum_C, H_min, W_min)
+    """
+    def forward(self, xs):
+        target_h = min(x.shape[2] for x in xs)
+        target_w = min(x.shape[3] for x in xs)
+        aligned = [F.adaptive_avg_pool2d(x, (target_h, target_w)) for x in xs]
+        return torch.cat(aligned, dim=1)
+
+
+# ---------------------------------------------------------------------------
+# IFM  — Information Fusion Module (Low-GD global token generator)
+# ---------------------------------------------------------------------------
+
+class IFM(nn.Module):
+    """
+    Produces low-level global tokens from the concatenated SimFusion_4in output.
+
+    Args:
+        c1          : input channels  (= sum of 4 backbone stage channels after scaling)
+        trans_channels: list [ch0, ch1] — sizes of the two token groups to split into.
+                        e.g. [64, 32] → output has 96 channels split as [64, 32].
+
+    YAML usage:  [-1, 1, IFM, [[64, 32]]]
+    """
+    def __init__(self, c1, trans_channels):
+        super().__init__()
+        embed_dim = sum(trans_channels)
+        self.conv1   = ConvBNAct(c1, embed_dim, k=1)
+        self.dw_conv = ConvBNAct(embed_dim, embed_dim, k=3, g=embed_dim)
+        self.conv2   = ConvBNAct(embed_dim, embed_dim, k=1)
+        self.trans_channels = trans_channels
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.dw_conv(x)
+        x = self.conv2(x)
+        return x.split(self.trans_channels, dim=1)   # tuple of tensors
+
+
+# ---------------------------------------------------------------------------
+# SimFusion_3in  — Low-GD Feature Alignment Module (3 inputs)
+# ---------------------------------------------------------------------------
+
+class SimFusion_3in(nn.Module):
+    """
+    Align 3 feature maps to the largest spatial size, concatenate, then fuse
+    to `out_channels` with a 1×1 conv.
+
+    Args:
+        in_channel_list : list of 2 extra channel counts (3rd = from previous layer, inferred)
+        out_channels    : output channel count
+
+    YAML usage:  [[4, 6, -1], 1, SimFusion_3in, [512]]
+    The three input feature maps come from YAML `from` indices.
+    SimFusion_3in only needs out_channels; total_in is computed in forward from actual inputs.
+    """
+    def __init__(self, total_in, out_channels):
+        super().__init__()
+        self.out_channels = out_channels
+        self.fuse = ConvBNAct(total_in, out_channels, k=1)
+
+    def forward(self, xs):
+        target_h = max(x.shape[2] for x in xs)
+        target_w = max(x.shape[3] for x in xs)
+        aligned = [
+            F.interpolate(x, size=(target_h, target_w), mode='bilinear', align_corners=False)
+            if (x.shape[2] != target_h or x.shape[3] != target_w) else x
+            for x in xs
+        ]
+        return self.fuse(torch.cat(aligned, dim=1))
+
+
+# ---------------------------------------------------------------------------
+# InjectionMultiSum_Auto_pool  — injects global token into local feature
+# ---------------------------------------------------------------------------
+
+class InjectionMultiSum_Auto_pool(nn.Module):
+    """
+    Inject a global token (split from IFM/TopBasicLayer output) into a local
+    feature map via element-wise addition after learned projection + pooling.
+
+    Args:
+        c1          : local feature channels (= output channels)
+        c2          : output channels (== c1 for Gold-YOLO usage)
+        trans_channels: list [ch0, ch1] — sizes of the two token groups
+        token_idx   : which token group to use (0 or 1)
+
+    YAML usage:  [[-1, 12], 1, InjectionMultiSum_Auto_pool, [512, [64, 32], 0]]
+    """
+    def __init__(self, c1, c2, trans_channels, token_idx):
+        super().__init__()
+        self.token_idx   = token_idx
+        token_c          = trans_channels[token_idx]
+        self.local_proj  = ConvBNAct(c1, c2, k=1)
+        self.token_proj  = ConvBNAct(token_c, c2, k=1)
+        self.out_proj    = ConvBNAct(c2, c2, k=1)
+
+    def forward(self, xs):
+        # xs[0] = local feature map, xs[1] = tuple of tokens from IFM
+        local, tokens = xs
+        token = tokens[self.token_idx]              # (B, token_c, Ht, Wt)
+        # Pool token to match local spatial size
+        token_up = F.adaptive_avg_pool2d(token, (local.shape[2], local.shape[3]))
+        out = self.local_proj(local) + self.token_proj(token_up)
+        return self.out_proj(out)
+
+
+# ---------------------------------------------------------------------------
+# PyramidPoolAgg  — High-GD Feature Alignment Module
+# ---------------------------------------------------------------------------
+
+class PyramidPoolAgg(nn.Module):
+    """
+    Aggregate features from multiple scales by adaptive pooling to a common
+    spatial size, then concatenate.
+
+    Args:
+        out_channels: total output channels (for the projection conv)
+        stride      : downsample stride used to compute target spatial size
+
+    YAML usage:  [[20, 16, 10], 1, PyramidPoolAgg, [352, 2]]
+    """
+    def __init__(self, total_in, out_channels, stride=2):
+        super().__init__()
+        self.stride = stride
+        self.proj   = ConvBNAct(total_in, out_channels, k=1)
+
+    def forward(self, xs):
+        h = min(x.shape[2] for x in xs) // self.stride
+        w = min(x.shape[3] for x in xs) // self.stride
+        pooled = [F.adaptive_avg_pool2d(x, (h, w)) for x in xs]
+        return self.proj(torch.cat(pooled, dim=1))
+
+
+# ---------------------------------------------------------------------------
+# TopBasicLayer  — High-GD transformer-style IFM
+# ---------------------------------------------------------------------------
+
+class TopBasicLayer(nn.Module):
+    """
+    Lightweight transformer block for High-GD global token generation.
+    Uses depthwise separable conv to approximate attention cheaply.
+
+    Args:
+        embed_dim     : input/output channels
+        trans_channels: list [ch0, ch1] — output split sizes
+
+    YAML usage:  [-1, 1, TopBasicLayer, [352, [64, 128]]]
+    """
+    def __init__(self, embed_dim, trans_channels):
+        super().__init__()
+        self.norm1 = nn.BatchNorm2d(embed_dim)
+        self.dw    = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1, groups=embed_dim, bias=False)
+        self.norm2 = nn.BatchNorm2d(embed_dim)
+        self.pw1   = nn.Conv2d(embed_dim, embed_dim * 2, 1, bias=False)
+        self.act   = nn.SiLU()
+        self.pw2   = nn.Conv2d(embed_dim * 2, embed_dim, 1, bias=False)
+
+        out_c = sum(trans_channels)
+        self.proj = nn.Conv2d(embed_dim, out_c, 1, bias=False)
+        self.trans_channels = trans_channels
+
+    def forward(self, x):
+        x = x + self.dw(self.norm1(x))
+        x = x + self.pw2(self.act(self.pw1(self.norm2(x))))
+        x = self.proj(x)
+        return x.split(self.trans_channels, dim=1)   # tuple
+
+
+# ---------------------------------------------------------------------------
+# AdvPoolFusion  — High-GD local feature aggregation
+# ---------------------------------------------------------------------------
+
+class AdvPoolFusion(nn.Module):
+    """
+    Fuse two adjacent feature maps: upsample the smaller to the larger,
+    then concatenate. Used before InjectionMultiSum_Auto_pool in High-GD.
+
+    YAML usage:  [[20, 17], 1, AdvPoolFusion, []]
+    Takes a list of exactly 2 tensors.
+    """
+    def forward(self, xs):
+        x0, x1 = xs
+        if x0.shape[2:] != x1.shape[2:]:
+            # upsample the smaller one
+            if x0.shape[2] < x1.shape[2]:
+                x0 = F.interpolate(x0, size=x1.shape[2:], mode='bilinear', align_corners=False)
+            else:
+                x1 = F.interpolate(x1, size=x0.shape[2:], mode='bilinear', align_corners=False)
+        return torch.cat([x0, x1], dim=1)
 

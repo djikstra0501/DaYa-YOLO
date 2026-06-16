@@ -94,6 +94,16 @@ from ultralytics.nn.modules import (
     BiLevelRoutingAttention,
     C3k2BRA,
     LSKA,
+    EMA,
+    ConvBNAct,
+    TripletAttention,
+    SimFusion_4in,
+    IFM,
+    SimFusion_3in,
+    InjectionMultiSum_Auto_pool,
+    PyramidPoolAgg,
+    TopBasicLayer,
+    AdvPoolFusion,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -476,11 +486,11 @@ class BaseModel(torch.nn.Module):
                     tgt, src = tgt_layers[ti], src_layers[si]
                     tgt_name, src_name = tgt.__class__.__name__, src.__class__.__name__
 
-                    if isinstance(tgt, ()):  # INSERTION
+                    if isinstance(tgt, (EMA, LSKA)):  # INSERTION
                         ti += 1; continue
                     if isinstance(tgt, (ECA)) and src_name == "C3k2":  # REPLACEMENT
                         si += 1; ti += 1; continue
-                    if tgt_name in {"C3k2Spa", "C3k2Cha"} and src_name == "C3k2":  # WRAPPER
+                    if tgt_name in {"C3k2Spa", "C3k2Cha", "C3k2BRA"} and src_name == "C3k2":  # WRAPPER
                         wrapper_map[si] = ti
                         si += 1; ti += 1; continue
 
@@ -1963,6 +1973,52 @@ def parse_model(d, ch, verbose=True):
         elif m is LSKA:
             c1, c2 = ch[f], ch[f]
             args = [c1, *args]  # args = [k_size] from yaml
+        elif m is EMA:
+            c2 = ch[f]           # channel-preserving: output == input
+            # args from yaml = [factor] (optional, default 32)
+            # prepend c2 so the constructor gets (channels, factor)
+            args = [c2, *args]
+        # YOLO-DP Module
+        elif m is TripletAttention:
+            c1 = ch[f]
+            c2 = c1
+            args = [c1]
+        elif m is SimFusion_3in:
+            total_in = sum(ch[x] for x in f)   # sum channels of the 3 from-indices
+            c2   = args[0]
+            args = [total_in, c2]               # matches new __init__(total_in, out_channels)
+        elif m is SimFusion_4in:
+            c2 = sum(ch[x] for x in f)
+            args = []
+        elif m is IFM:
+            c1 = ch[f]
+            trans_channels = _unwrap_single_nested_lists(args[0])   # [[64,32]] → [64,32]
+            c2 = sum(trans_channels)                                # bookkeeping (tuple output, but track total)
+            args = [c1, trans_channels]
+        elif m is IFM:
+            c1 = ch[f]
+            trans_channels = _unwrap_single_nested_lists(args[0])   # [[64,32]] → [64,32]
+            c2 = sum(trans_channels)                                # bookkeeping (tuple output, but track total)
+            args = [c1, trans_channels]
+        elif m is InjectionMultiSum_Auto_pool:
+            c1 = ch[f[0]]                                           # local feature channels
+            c2        = args[0]
+            trans_channels = _unwrap_single_nested_lists(args[1])
+            token_idx = args[2]
+            args = [c1, c2, trans_channels, token_idx]
+        elif m is PyramidPoolAgg:
+            total_in = sum(ch[x] for x in f)   # sum channels of all from-indices
+            c2     = args[0]
+            stride = args[1] if len(args) > 1 else 2
+            args   = [total_in, c2, stride]     # matches new __init__(total_in, out_channels, stride)
+        elif m is TopBasicLayer:
+            embed_dim      = args[0]
+            trans_channels = _unwrap_single_nested_lists(args[1])
+            c2             = sum(trans_channels)                    # total output channels
+            args           = [embed_dim, trans_channels]
+        elif m is AdvPoolFusion:
+            c2   = sum(ch[x] for x in f)
+            args = []
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect, DualDDetect}
         ):
