@@ -2,7 +2,7 @@
 import traceback
 
 # Load your custom model config
-model = YOLO("ultralytics/cfg/models/v8/yolov8n-DP.yaml")
+model = YOLO("ultralytics/cfg/models/v5/yolov5-PEST.yaml")
 
 # --- TRAIN TEST ---
 try:
@@ -12,7 +12,7 @@ try:
         epochs=10,           # train a bit longer so head can learn
         imgsz=256,           # smaller image size
         device="cpu",        # keep it light
-        pretrained="yolov8n.pt",  # warm start from base weights
+        pretrained="yolov5nu.pt",  # warm start from base weights
         save=False,          # don't save weights
         save_period=-1,      # never save during training
         project=None,        # no folder creation

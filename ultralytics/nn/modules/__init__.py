@@ -82,6 +82,8 @@ from .block import (
     PyramidPoolAgg,
     TopBasicLayer,
     AdvPoolFusion,
+    CoTAttention,
+    ConvNeXtBlock,
 )
 from .conv import (
     CBAM,
@@ -249,4 +251,6 @@ __all__ = (
     "PyramidPoolAgg",
     "TopBasicLayer",
     "AdvPoolFusion",
+    "CoTAttention",
+    "ConvNeXtBlock",
 )

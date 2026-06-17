@@ -76,6 +76,8 @@ __all__ = (
     "PyramidPoolAgg",
     "TopBasicLayer",
     "AdvPoolFusion",
+    "CoTAttention",
+    "ConvNeXtBlock",
 )
 
 
@@ -3062,4 +3064,189 @@ class AdvPoolFusion(nn.Module):
             else:
                 x1 = F.interpolate(x1, size=x0.shape[2:], mode='bilinear', align_corners=False)
         return torch.cat([x0, x1], dim=1)
+    
+# YOLO-PEST
+# Source: "YOLO-PEST: a novel rice pest detection approach based on YOLOv5s"
+#          Qiang et al., Plant Methods 2025  (Open Access, CC BY-NC-ND 4.0)
+#          https://doi.org/10.1186/s13007-025-01438-w
+#
+# Two modules:
+#   CoTAttention   — Contextual Transformer Attention (Li et al., TPAMI 2022)
+#                    Placed BEFORE the SPPF layer in the backbone.
+#   ConvNeXtBlock  — ConvNeXt-style block (Liu et al., CVPR 2022)
+#                    Replaces C3 blocks in the neck for small-object fusion.
+
+
+class CoTAttention(nn.Module):
+    """
+    Contextual Transformer (CoT) Attention — TPAMI 2022.
+    Used in YOLO-PEST backbone, inserted before the SPPF layer.
+
+    Fuses static context (local k×k group-conv on keys) with dynamic
+    context (self-attention between queries and contextual keys) then
+    outputs K1 + K2  (Eq. 1–3 in the paper).
+
+    Args:
+        dim       : input/output channels (unchanged)
+        kernel_size: group-conv kernel for local context. Paper uses 3.
+    """
+
+    def __init__(self, dim: int, kernel_size: int = 3):
+        super().__init__()
+        self.dim = dim
+        self.kernel_size = kernel_size
+
+        # ── Static context: k×k group conv to get K1 ──────────────────────
+        # groups=dim → depthwise; captures local spatial context per channel
+        self.key_embed = nn.Sequential(
+            nn.Conv2d(dim, dim,
+                      kernel_size=kernel_size,
+                      padding=kernel_size // 2,
+                      groups=dim,
+                      bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+
+        # ── Value projection: 1×1 halves channels for efficiency ──────────
+        self.value_embed = nn.Sequential(
+            nn.Conv2d(dim, dim // 2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(dim // 2),
+        )
+
+        # ── Attention matrix A: two successive 1×1 convs on [K1, Q] ───────
+        # Input = concat(K1, Q) → 2*dim channels
+        # Paper Eq.1:  A = [K1, Q] · Wθ · Wδ
+        factor = 4
+        self.attn_embed = nn.Sequential(
+            nn.Conv2d(2 * dim, 2 * dim // factor, kernel_size=1, bias=False),
+            nn.BatchNorm2d(2 * dim // factor),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(2 * dim // factor, kernel_size * kernel_size * (dim // 2),
+                      kernel_size=1),
+        )
+
+        self.unfold = nn.Unfold(kernel_size=kernel_size,
+                                padding=kernel_size // 2,
+                                stride=1)
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, H, W)
+        B, C, H, W = x.shape
+
+        # K1: static contextual key  (B, C, H, W)
+        k1 = self.key_embed(x)
+
+        # V: value  (B, C//2, H, W)
+        v = self.value_embed(x).view(B, C // 2, -1)   # (B, C//2, H*W)
+
+        # Attention matrix from [K1, Q=x]  (Q = original input)
+        # (B, 2C, H, W) → conv stack → (B, k*k*C//2, H, W)
+        y = torch.cat([k1, x], dim=1)
+        attn = self.attn_embed(y)                      # (B, k²·C//2, H, W)
+
+        # Unfold V into local k×k patches
+        # unfold(v_spatial) → (B, C//2 * k², H*W)
+        v_unf = self.unfold(
+            self.value_embed(x)                        # reuse value spatial map
+        )                                              # (B, C//2·k², H*W)
+
+        # Reshape attn → (B, C//2, k², H*W) then softmax over k² dim
+        k = self.kernel_size
+        attn = attn.view(B, C // 2, k * k, H * W)
+        attn = self.softmax(attn)                      # (B, C//2, k², H*W)
+
+        # Reshape v_unf → (B, C//2, k², H*W)
+        v_unf = v_unf.view(B, C // 2, k * k, H * W)
+
+        # K2 = V · A  (Eq. 2): weighted sum over k² neighbourhood
+        # (B, C//2, k², H*W) * (B, C//2, k², H*W) → sum over k² → (B, C//2, H*W)
+        k2 = (attn * v_unf).sum(dim=2)                # (B, C//2, H*W)
+        k2 = k2.view(B, C // 2, H, W)
+
+        # Output = K1 + K2  (Eq. 3) — broadcast-add on C//2 channels,
+        # then concat with the other C//2 half of K1 to keep full dim
+        # Implementation note: original paper sums K1[:, :C//2] + K2 and
+        # keeps K1[:, C//2:] unchanged, then concatenates.
+        out = torch.cat([k1[:, :C // 2] + k2, k1[:, C // 2:]], dim=1)
+        return out
+
+
+class ConvNeXtBlock(nn.Module):
+    """
+    ConvNeXt-style block — used in YOLO-PEST neck to replace C3.
+
+    Architecture per paper (Fig. 7 / 8):
+        DWConv 7×7  →  LayerNorm  →  1×1 (expand ×4)  →  GELU  →  1×1 (project)
+        + residual connection
+
+    This is the inverted-bottleneck design from Liu et al., CVPR 2022,
+    adapted as a drop-in C3 replacement in the YOLOv5s/YOLOv11 neck.
+
+    Args:
+        c1  : input channels
+        c2  : output channels
+        n   : number of stacked blocks  (handled by repeat_modules)
+        e   : unused expansion placeholder (kept for YAML compat with C3)
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        shortcut: bool = True,
+        g: int = 1,       # unused, YAML compat
+        e: float = 0.5,   # unused, YAML compat
+    ):
+        super().__init__()
+
+        # Optional channel projection when c1 != c2
+        self.proj = (
+            nn.Conv2d(c1, c2, kernel_size=1, bias=False)
+            if c1 != c2 else nn.Identity()
+        )
+
+        # Stack of n ConvNeXt micro-blocks
+        self.blocks = nn.Sequential(*[
+            _ConvNeXtMicro(c2) for _ in range(n)
+        ])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.blocks(self.proj(x))
+
+
+class _ConvNeXtMicro(nn.Module):
+    """Single ConvNeXt inverted-bottleneck micro-block."""
+
+    def __init__(self, dim: int, expansion: int = 4):
+        super().__init__()
+        mid = dim * expansion
+        self.block = nn.Sequential(
+            # Depthwise 7×7 — extracts spatial context per channel
+            nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim, bias=False),
+            # LayerNorm applied channel-wise (permute trick for NCHW)
+            _LayerNormNCHW(dim),
+            # Pointwise expand
+            nn.Conv2d(dim, mid, kernel_size=1, bias=False),
+            nn.GELU(),
+            # Pointwise project back
+            nn.Conv2d(mid, dim, kernel_size=1, bias=False),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.block(x)   # residual
+
+
+class _LayerNormNCHW(nn.Module):
+    """LayerNorm for NCHW tensors (normalises over the channel dim)."""
+
+    def __init__(self, num_channels: int, eps: float = 1e-6):
+        super().__init__()
+        self.norm = nn.LayerNorm(num_channels, eps=eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # (B, C, H, W) → (B, H, W, C) → norm → (B, C, H, W)
+        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
 

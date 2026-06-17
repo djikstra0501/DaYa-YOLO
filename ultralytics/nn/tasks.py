@@ -104,6 +104,8 @@ from ultralytics.nn.modules import (
     PyramidPoolAgg,
     TopBasicLayer,
     AdvPoolFusion,
+    CoTAttention,
+    ConvNeXtBlock,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -482,27 +484,41 @@ class BaseModel(torch.nn.Module):
                 index_map, wrapper_map = {}, {}
                 si = ti = 0
 
+                INSERTION_TYPES    = (EMA, LSKA, CoTAttention)
+                REPLACEMENT_TYPES  = (ECA,ConvNeXtBlock)
+                REPLACEMENT_SRCS   = {"C3k2", "C3"}
+                WRAPPER_TGT_NAMES  = {"C3k2Spa", "C3k2Cha", "C3k2BRA"}
+                WRAPPER_SRCS       = {"C3k2"}
+
                 while si < len(src_layers) and ti < len(tgt_layers):
                     tgt, src = tgt_layers[ti], src_layers[si]
-                    tgt_name, src_name = tgt.__class__.__name__, src.__class__.__name__
+                    tgt_name = tgt.__class__.__name__
+                    src_name = src.__class__.__name__
 
-                    if isinstance(tgt, (EMA, LSKA)):  # INSERTION
-                        ti += 1; continue
-                    if isinstance(tgt, (ECA)) and src_name == "C3k2":  # REPLACEMENT
-                        si += 1; ti += 1; continue
-                    if tgt_name in {"C3k2Spa", "C3k2Cha", "C3k2BRA"} and src_name == "C3k2":  # WRAPPER
+                    if isinstance(tgt, INSERTION_TYPES): # INSERTION
+                        ti += 1
+                        continue
+
+                    if isinstance(tgt, REPLACEMENT_TYPES) and src_name in REPLACEMENT_SRCS:  # REPLACEMENT
+                        si += 1; ti += 1
+                        continue
+
+                    if tgt_name in WRAPPER_TGT_NAMES and src_name in WRAPPER_SRCS: # WRAPPER
                         wrapper_map[si] = ti
-                        si += 1; ti += 1; continue
+                        si += 1; ti += 1
+                        continue
 
-                    index_map[si] = ti  # NORMAL
+                    index_map[si] = ti # NORMAL
                     si += 1; ti += 1
 
                 target_sd = self.state_dict()
                 shifted = {}
                 for k, v in csd.items():
-                    if not k.startswith("model."): continue
+                    if not k.startswith("model."):
+                        continue
                     parts = k.split(".")
-                    if len(parts) < 3 or not parts[1].isdigit(): continue
+                    if len(parts) < 3 or not parts[1].isdigit():
+                        continue
 
                     src_idx = int(parts[1])
                     if src_idx in index_map:
@@ -517,6 +533,7 @@ class BaseModel(torch.nn.Module):
 
                 updated_csd = {k: v for k, v in updated_csd.items() if not k.startswith("model.")}
                 updated_csd.update(shifted)
+
             except Exception as e:
                 print(f"[Custom Loader Error] {e}")
             return updated_csd
@@ -1865,6 +1882,7 @@ def parse_model(d, ch, verbose=True):
             C3k2Cha,
             SpectralFeatureEncoder,
             C3k2BRA,
+            ConvNeXtBlock,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1886,6 +1904,7 @@ def parse_model(d, ch, verbose=True):
             A2C2f,
             C2fG,
             C3k2BRA,
+            ConvNeXtBlock,
         }
     )
     
@@ -2019,6 +2038,12 @@ def parse_model(d, ch, verbose=True):
         elif m is AdvPoolFusion:
             c2   = sum(ch[x] for x in f)
             args = []
+        # YOLO-PEST Module
+        elif m is CoTAttention:
+            c1 = ch[f]
+            c2 = c1
+            k  = args[0] if len(args) > 0 else 3
+            args = [c1, k]
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect, DualDDetect}
         ):
