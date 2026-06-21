@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model = YOLO('ultralytics/cfg/models/v5/yolov5-PEST.yaml')
+model = YOLO('ultralytics/cfg/models/v8/yolov8n-MTD.yaml')
 # model = YOLO('YOLO-DP.pt')
 
 # result = model.load("yolo11n.pt")

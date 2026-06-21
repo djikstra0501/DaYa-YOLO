@@ -106,6 +106,8 @@ from ultralytics.nn.modules import (
     AdvPoolFusion,
     CoTAttention,
     ConvNeXtBlock,
+    MBConv,
+    C2f_T,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1883,6 +1885,7 @@ def parse_model(d, ch, verbose=True):
             SpectralFeatureEncoder,
             C3k2BRA,
             ConvNeXtBlock,
+            C2f_T,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1905,6 +1908,7 @@ def parse_model(d, ch, verbose=True):
             C2fG,
             C3k2BRA,
             ConvNeXtBlock,
+            C2f_T,
         }
     )
     
@@ -2044,6 +2048,11 @@ def parse_model(d, ch, verbose=True):
             c2 = c1
             k  = args[0] if len(args) > 0 else 3
             args = [c1, k]
+        # MTD-YOLO Module
+        elif m is MBConv:
+            c1 = ch[f]
+            c2 = make_divisible(min(args[0], max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]   # k, s, expand_ratio, use_se, use_hs pass through
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect, DualDDetect}
         ):

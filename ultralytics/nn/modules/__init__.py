@@ -84,6 +84,8 @@ from .block import (
     AdvPoolFusion,
     CoTAttention,
     ConvNeXtBlock,
+    MBConv,
+    C2f_T,
 )
 from .conv import (
     CBAM,
@@ -253,4 +255,6 @@ __all__ = (
     "AdvPoolFusion",
     "CoTAttention",
     "ConvNeXtBlock",
+    "MBConv",
+    "C2f_T",
 )

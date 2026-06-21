@@ -78,6 +78,8 @@ __all__ = (
     "AdvPoolFusion",
     "CoTAttention",
     "ConvNeXtBlock",
+    "MBConv",
+    "C2f_T",
 )
 
 
@@ -3249,4 +3251,157 @@ class _LayerNormNCHW(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # (B, C, H, W) → (B, H, W, C) → norm → (B, C, H, W)
         return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+    
+# MTD-YOLO modules
+# Source: Zhang et al., "MTD-YOLO: An Improved YOLOv8-Based Rice Pest
+#         Detection Model", Electronics 2025, 14(14):2912
+#         https://doi.org/10.3390/electronics14142912
+#
+# Two modules:
+#   MBConv  — MobileNetV3 inverted-residual "bneck" block (backbone)
+#   C2f_T   — C2f with Triplet Attention in each bottleneck (neck/head)
+#             (reuses the existing AttentionGate / TripletAttention from other reference)
+
+
+def _make_divisible(v, divisor=8, min_value=None):
+    """Round channel counts to nearest multiple of divisor (MobileNetV3 rule)."""
+    if min_value is None:
+        min_value = divisor
+    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
+    if new_v < 0.9 * v:
+        new_v += divisor
+    return new_v
+
+
+class _HSigmoid(nn.Module):
+    def forward(self, x):
+        return F.relu6(x + 3.0, inplace=True) / 6.0
+
+
+class _HSwish(nn.Module):
+    def forward(self, x):
+        return x * (F.relu6(x + 3.0, inplace=True) / 6.0)
+
+
+class _SqueezeExcite(nn.Module):
+    """SE block used inside MobileNetV3 bneck."""
+
+    def __init__(self, channels: int, reduction: int = 4):
+        super().__init__()
+        mid = _make_divisible(channels // reduction)
+        self.fc1 = nn.Conv2d(channels, mid, 1)
+        self.fc2 = nn.Conv2d(mid, channels, 1)
+        self.act = nn.ReLU(inplace=True)
+        self.gate = _HSigmoid()
+        channels = 24
+
+    def forward(self, x):
+        s = F.adaptive_avg_pool2d(x, 1)
+        s = self.act(self.fc1(s))
+        s = self.gate(self.fc2(s))
+        return x * s
+
+
+class MBConv(nn.Module):
+    """
+    MobileNetV3 inverted-residual block ("bneck").
+    expand 1x1 -> depthwise kxk (stride s) -> [SE] -> project 1x1 (+residual)
+
+    YAML args (positional, matches C3k2-style: c1 auto from ch[f]):
+        [c2, k, s, expand_ratio, use_se, use_hs]
+    Defaults: k=3, s=1, expand_ratio=4, use_se=True, use_hs=True
+
+    Example:
+        - [-1, 1, MBConv, [16, 3, 2, 1, False, False]]   # stage 1, no expand, ReLU, SE off
+        - [-1, 1, MBConv, [24, 3, 2, 4, False, False]]   # stage 2
+        - [-1, 1, MBConv, [40, 5, 2, 3, True,  True ]]   # stage 3, SE+HSwish
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        k: int = 3,
+        s: int = 1,
+        expand_ratio: float = 4,
+        use_se: bool = True,
+        use_hs: bool = True,
+    ):
+        super().__init__()
+        c_mid = _make_divisible(c1 * expand_ratio)
+        act = _HSwish() if use_hs else nn.ReLU(inplace=True)
+        self.add = (s == 1 and c1 == c2)
+
+        layers = []
+        # expand (skip if expand_ratio==1, i.e. c_mid == c1)
+        if c_mid != c1:
+            layers += [
+                nn.Conv2d(c1, c_mid, 1, bias=False),
+                nn.BatchNorm2d(c_mid),
+                act,
+            ]
+        # depthwise
+        layers += [
+            nn.Conv2d(c_mid, c_mid, k, s, k // 2, groups=c_mid, bias=False),
+            nn.BatchNorm2d(c_mid),
+        ]
+        self.dw_act = act
+        self.pre_se = nn.Sequential(*layers)
+        self.se = _SqueezeExcite(c_mid) if use_se else nn.Identity()
+        # project
+        self.project = nn.Sequential(
+            nn.Conv2d(c_mid, c2, 1, bias=False),
+            nn.BatchNorm2d(c2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.dw_act(self.pre_se(x))
+        y = self.se(y)
+        y = self.project(y)
+        return x + y if self.add else y
+
+
+# C2f_T : C2f with Triplet Attention
+
+class _TBottleneck(nn.Module):
+    """Standard C2f bottleneck with TripletAttention appended."""
+
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        super().__init__()
+        c_ = int(c2 * e)
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        self.cv2 = Conv(c_, c2, k[1], 1, g=g)
+        self.attn = TripletAttention(c2)   # reused, unchanged
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.attn(self.cv2(self.cv1(x)))
+        return x + y if self.add else y
+
+
+class C2f_T(nn.Module):
+    """
+    C2f + Triplet Attention ("C2f-T" in the MTD-YOLO paper).
+    Same split/concat skeleton as Ultralytics C2f; each bottleneck ends
+    with TripletAttention for channel-spatial dual-attention.
+
+    YAML usage (identical positional args to C2f / C3k2):
+        - [-1, 2, C2f_T, [512, True]]
+    """
+
+    def __init__(self, c1: int, c2: int, n: int = 1, shortcut: bool = False,
+                 g: int = 1, e: float = 0.5):
+        super().__init__()
+        self.c = int(c2 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        self.m = nn.ModuleList(
+            _TBottleneck(self.c, self.c, shortcut, g, k=(3, 3), e=1.0)
+            for _ in range(n)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
 
