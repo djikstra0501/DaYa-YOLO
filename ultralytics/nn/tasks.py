@@ -380,11 +380,14 @@ class BaseModel(torch.nn.Module):
             return True
 
         def is_daya_architecture():
-            """Detects if the model is our DaYa-YOLO (Chrominance-Structural) variant."""
+            """Detects if the model is our DaYa-YOLO (Chrominance-Structural) variant.
+            Only triggers the dedicated loader if SpectralFeatureEncoder appears beyond
+            index 0 (i.e. as a mid-network chromatic branch, not a global input transform).
+            """
             if hasattr(self, "model"):
-                for layer in self.model:
+                for i, layer in enumerate(self.model):
                     if layer.__class__.__name__ == "SpectralFeatureEncoder":
-                        return True
+                        return i > 0  # index 0 = global preprocessor, treat as insertion
             return False
 
         def has_identity_shift_case():
@@ -486,7 +489,7 @@ class BaseModel(torch.nn.Module):
                 index_map, wrapper_map = {}, {}
                 si = ti = 0
 
-                INSERTION_TYPES    = (EMA, LSKA, CoTAttention)
+                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, SpectralFeatureEncoder)
                 REPLACEMENT_TYPES  = (ECA,ConvNeXtBlock)
                 REPLACEMENT_SRCS   = {"C3k2", "C3"}
                 WRAPPER_TGT_NAMES  = {"C3k2Spa", "C3k2Cha", "C3k2BRA"}
