@@ -1184,8 +1184,7 @@ class SpectralFeatureEncoder(nn.Module):
 
         if self.mode == "LAB":
             # ----------------------------------------------------------------
-            # PART 1: Fixed RGB -> LAB conversion (frozen, no gradients)
-            # This is the exact same math as cv2.COLOR_BGR2Lab.
+            # PART 1: Fixed RGB -> XYZ conversion (frozen, no gradients)
             # The network cannot change this — it is physics.
             # ----------------------------------------------------------------
             self.xyz_conv = nn.Conv2d(3, 3, kernel_size=1, stride=1, padding=0, bias=False)
