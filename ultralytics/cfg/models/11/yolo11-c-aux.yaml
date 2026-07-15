@@ -28,7 +28,7 @@ backbone:
   - [-1, 1, Conv, [512, 3, 2]]      # 6: P4/16 (Main P4)
   - [-1, 2, C3k2, [512, True]]     # 7
   - [-1, 1, Conv, [1024, 3, 2]]     # 8: P5/32 (Main P5)
-  - [-1, 2, C3k2, [1024, True]]    # 9
+  - [-1, 2, C3k2, [1024, True]]    # 9git 
   - [-1, 1, SPPF, [1024, 5]]       # 10
   - [-1, 2, C2PSA, [1024]]         # 11: Final Main Backbone Output
 
