@@ -111,6 +111,7 @@ from .conv import (
     SCM,
     CCS,
     SpectralFeatureEncoder,
+    RGBIdentityEncoder,
     SEAtt,
     LSKA,
 )
@@ -239,6 +240,7 @@ __all__ = (
     "C3k2Spa",
     "C3k2Cha",
     "SpectralFeatureEncoder",
+    "RGBIdentityEncoder",
     "SEAtt",
     "BiLevelRoutingAttention",
     "C3k2BRA",

@@ -90,6 +90,7 @@ from ultralytics.nn.modules import (
     C3k2Spa,
     C3k2Cha,
     SpectralFeatureEncoder,
+    RGBIdentityEncoder,
     SEAtt,
     BiLevelRoutingAttention,
     C3k2BRA,
@@ -380,13 +381,14 @@ class BaseModel(torch.nn.Module):
             return True
 
         def is_daya_architecture():
-            """Detects if the model is our DaYa-YOLO (Chrominance-Structural) variant.
-            Only triggers the dedicated loader if SpectralFeatureEncoder appears beyond
-            index 0 (i.e. as a mid-network chromatic branch, not a global input transform).
+            """Detects if the model is our DaYa-YOLO (Chrominance-Structural) variant,
+            or the RGB-passthrough ablation control variant, which shares the exact
+            same layer placement and index-shift pattern.
             """
+            DAYA_BRANCH_TYPES = ("SpectralFeatureEncoder", "RGBIdentityEncoder")
             if hasattr(self, "model"):
                 for i, layer in enumerate(self.model):
-                    if layer.__class__.__name__ == "SpectralFeatureEncoder":
+                    if layer.__class__.__name__ in DAYA_BRANCH_TYPES:
                         return i > 0  # index 0 = global preprocessor, treat as insertion
             return False
 
@@ -489,7 +491,7 @@ class BaseModel(torch.nn.Module):
                 index_map, wrapper_map = {}, {}
                 si = ti = 0
 
-                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, SpectralFeatureEncoder)
+                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, SpectralFeatureEncoder, RGBIdentityEncoder)
                 REPLACEMENT_TYPES  = (ECA,ConvNeXtBlock)
                 REPLACEMENT_SRCS   = {"C3k2", "C3"}
                 WRAPPER_TGT_NAMES  = {"C3k2Spa", "C3k2Cha", "C3k2BRA"}
@@ -1886,6 +1888,7 @@ def parse_model(d, ch, verbose=True):
             C3k2Spa,
             C3k2Cha,
             SpectralFeatureEncoder,
+            RGBIdentityEncoder,
             C3k2BRA,
             ConvNeXtBlock,
             C2f_T,

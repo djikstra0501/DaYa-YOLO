@@ -14,7 +14,7 @@ scales: # model compound scaling constants, i.e. 'model=yolo11n.yaml' will call 
   l: [1.00, 1.00, 512] # summary: 357 layers, 25372160 parameters, 25372144 gradients, 87.6 GFLOPs
   x: [1.00, 1.50, 512] # summary: 357 layers, 56966176 parameters, 56966160 gradients, 196.0 GFLOPs
 
-# DaYa-YOLO (Decoupled Auxiliary hYbrid-chromatic Architecture)
+# RGB Identity (RGB Identity Auxiliary Architecture) FOR DaYa-YOLO Ablation Study
 backbone:
   # [from, repeats, module, args]
   - [-1, 1, nn.Identity, []]      # 0: Raw Input Image [3, H, W]
@@ -32,15 +32,15 @@ backbone:
   - [-1, 1, SPPF, [1024, 5]]       # 10
   - [-1, 2, C2PSA, [1024]]         # 11: Final Main Backbone Output
 
-  # --- AUXILIARY BACKBONE (Chromatic Branch) ---
-  - [0, 1, SpectralFeatureEncoder, [3, "XYZ"]] # 12: Encoder (S=1, C=3), Encoder options: "XYZ", "LAB"
+  # --- AUXILIARY BACKBONE (RGB Identity) ---
+  - [0, 1, RGBIdentityEncoder, [3]] # 12: RGB Identity Encoder (S=1, C=3)
   - [-1, 1, Conv, [32, 3, 2]]       # 13: Aux P1/2
   - [-1, 1, Conv, [32, 3, 2]]       # 14: Aux P2/4
   - [-1, 1, Conv, [32, 3, 2]]       # 15: Aux P3/8 (Color Clue P3)
   - [-1, 1, Conv, [64, 3, 2]]       # 16: Aux P4/16 (Color Clue P4)
   - [-1, 1, Conv, [64, 3, 2]]       # 17: Aux P5/32 (Color Clue P5)
 
-# DaYa-YOLO Head (Triple-Fusion Strategy)
+# RGB Identity Head (Triple-Fusion Strategy) same exact as DaYa-YOLO Head
 head:
   - [11, 1, nn.Upsample, [None, 2, "nearest"]] # 18: Up-P5 (index 11 is Main P5)
   - [[-1, 6, 16], 1, Concat, [1]]   # 19: Fuse [Up-P5 + Main P4 + Aux P4]

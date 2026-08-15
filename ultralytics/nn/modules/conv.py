@@ -33,6 +33,7 @@ __all__ = (
     "GnConv",
     "SpatialAttention2",
     "SpectralFeatureEncoder",
+    "RGBIdentityEncoder",
     "SEAtt",
     "LSKA",
 )
@@ -1333,6 +1334,59 @@ class SpectralFeatureEncoder(nn.Module):
             x = self._srgb_to_xyz(x)
             x = x * self.xyz_scale.clamp(min=0.01)
             return self.encoder(x)
+
+class RGBIdentityEncoder(nn.Module):
+    """
+    Ablation Control Branch for DaYa-YOLO — Plain RGB Passthrough Encoder.
+
+    Purpose:
+        Isolates whether performance gains from the auxiliary branch come
+        specifically from the physics-based color-space transformation
+        (SpectralFeatureEncoder, XYZ/LAB) or simply from the added
+        parameter capacity / second-branch structure itself.
+
+        This module performs NO color-space conversion. It is a plain,
+        fully learnable 1x1 convolution operating directly on sRGB input,
+        with matching output shape (3 channels, stride 1) to the CFE, so
+        it can be swapped into the exact same auxiliary-branch position
+        in the YAML with no other architectural changes.
+
+    Design rationale:
+        - No frozen/fixed transform of any kind — everything is learnable
+          from the start, unlike CFE's frozen physics + learnable scale.
+        - Identity-initialized (eye_ init), same convention as CFE's final
+          encoder layer, so both branches start from an equivalent "neutral"
+          state (output == input) before training diverges them. This keeps
+          the comparison fair: both branches begin training from the same
+          starting point, differing only in whether a physics-grounded
+          transform is present.
+        - Output shape (c2 channels, stride 1) matches SpectralFeatureEncoder
+          exactly, so downstream aux-backbone channel counts (32/32/32/64/64)
+          require no changes when swapping this in for ablation runs.
+
+    YAML usage (drop-in replacement for the CFE ablation row):
+        - [0, 1, RGBIdentityEncoder, [3]]
+        (compare to: - [0, 1, SpectralFeatureEncoder, [3, "LAB"]])
+    """
+
+    def __init__(self, c1=3, c2=3):
+        super().__init__()
+        # Single learnable 1x1 conv, stride 1 — no frozen component at all.
+        # This is intentionally the simplest possible learnable block that
+        # still matches CFE's parameter budget order-of-magnitude, so any
+        # performance difference in the ablation isn't attributable to a
+        # trivial capacity mismatch either.
+        self.encoder = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0, bias=False)
+
+        # Identity initialization — output equals input at the start of
+        # training, mirroring CFE's encoder init philosophy so neither
+        # branch has a "head start" purely from initialization.
+        nn.init.eye_(self.encoder.weight.view(c2, c1))
+
+    def forward(self, x):
+        # No gamma linearization, no color-space transform, no frozen math.
+        # Just a learnable linear projection of raw sRGB input.
+        return self.encoder(x)
 
 class SEAtt(nn.Module):
     """
