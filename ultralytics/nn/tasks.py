@@ -491,7 +491,7 @@ class BaseModel(torch.nn.Module):
                 index_map, wrapper_map = {}, {}
                 si = ti = 0
 
-                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, SpectralFeatureEncoder, RGBIdentityEncoder)
+                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, SpectralFeatureEncoder, RGBIdentityEncoder, BiLevelRoutingAttention)
                 REPLACEMENT_TYPES  = (ECA,ConvNeXtBlock)
                 REPLACEMENT_SRCS   = {"C3k2", "C3"}
                 WRAPPER_TGT_NAMES  = {"C3k2Spa", "C3k2Cha", "C3k2BRA"}
@@ -1985,7 +1985,6 @@ def parse_model(d, ch, verbose=True):
             #   - [-1, 1, CBAM, [7]]       -> uses kernel_size=7
             c1 = ch[f]
             c2 = c1  # CBAM doesn't change channel dimensions
-            
             if len(args) == 0:
                 # No args provided, use defaults
                 args = [c1]  # CBAM(c1), kernel_size will use default=7
@@ -2007,6 +2006,9 @@ def parse_model(d, ch, verbose=True):
             # args from yaml = [factor] (optional, default 32)
             # prepend c2 so the constructor gets (channels, factor)
             args = [c2, *args]
+        elif m is BiLevelRoutingAttention:
+            c2 = ch[f]
+            args = [c2, *args]   # inject dim = input channels; block preserves C
         # YOLO-DP Module
         elif m is TripletAttention:
             c1 = ch[f]
