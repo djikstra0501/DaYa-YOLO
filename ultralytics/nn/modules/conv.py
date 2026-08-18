@@ -1163,18 +1163,26 @@ class GnConv(nn.Module):
 
 class SpectralFeatureEncoder(nn.Module):
     """
-    Learnable Spectral Encoder for Rice Pest Detection (DaYa-YOLO).
+    Chromatic Feature Encoder (CFE) for Rice Pest Detection (DaYa-YOLO).
+
+    Applies a frozen, physically-grounded color-space conversion followed by a
+    static learnable per-channel scale and a learnable 1x1 encoder. The physics
+    stage carries no gradients; only the scale and the encoder are trained.
 
     Modes:
-        XYZ - CIE XYZ color space, full matrix initialization.
-        LAB - True CIE LAB conversion (sRGB linearized, D65 white point),
-              with 3 learnable scale parameters acting as automatic channel
-              importance weights (equivalent to sliding L*, a*, b* sliders
-              to find the best pest-visible combination).
+        XYZ - Linear sRGB -> CIE XYZ (frozen matrix, D65-referenced).
+        LAB - sRGB -> CIE L*a*b* (frozen, gamma-linearized, D65 white point),
+              output normalized to L/100, a,b/128 for training stability.
+              Three learnable scales act as per-channel importance weights
+              (constrained non-negative; see forward()).
 
     YAML usage:
         - [0, 1, SpectralFeatureEncoder, [3, "LAB"]]
         - [0, 1, SpectralFeatureEncoder, [3, "XYZ"]]
+
+    Note: c2 > 3 leaves the extra encoder output channels zero-initialized
+    (dead at start) because the encoder is eye_-initialized on a 3-wide input.
+    Keep c2 = 3 unless you re-init for a wider branch.
     """
 
     def __init__(self, c1=3, c2=3, mode="XYZ"):
@@ -1204,14 +1212,17 @@ class SpectralFeatureEncoder(nn.Module):
             ).view(1, 3, 1, 1))
 
             # ----------------------------------------------------------------
-            # PART 2: Learnable LAB channel scales (the "sliders")
-            # Initialized at 1.0 = neutral (no scaling), but can be adjusted by the network during training.
-            # During training, gradient descent finds the optimal scale for
-            # each channel:
-            #   lab_scale[0] -> how much L* (lightness) matters
-            #   lab_scale[1] -> how much a* (green<->red) matters  <- likely dominant for pests
-            #   lab_scale[2] -> how much b* (blue<->yellow) matters
-            # This is like automated by the loss function.
+            # PART 2: Static learnable per-channel LAB scale.
+            # One scalar per channel (L*, a*, b*), initialized 1.0 (neutral),
+            # trained once and fixed at inference. Acts as a channel-importance
+            # weight learned by the detection loss:
+            #   lab_scale[0] -> weight on L* (lightness)
+            #   lab_scale[1] -> weight on a* (green<->red)  <- expected dominant for pests
+            #   lab_scale[2] -> weight on b* (blue<->yellow)
+            # Constrained non-negative in forward() as a deliberate modeling
+            # choice (importance weight, not axis flip) — not a physics
+            # requirement. This static scale is the component replaced by a
+            # per-image content-adaptive predictor in the follow-up work.
             # ----------------------------------------------------------------
             self.lab_scale = nn.Parameter(torch.ones(1, 3, 1, 1))
 
@@ -1240,18 +1251,17 @@ class SpectralFeatureEncoder(nn.Module):
             for p in self.xyz_conv.parameters():
                 p.requires_grad = False  # frozen forever, same as LAB
 
-            # Normalize output to roughly [-1, 1] for training stability
-            # XYZ values after D65 normalization are in [0, ~1.08]
-            # divide by 1.0 keeps scale, just making it explicit
-            self.register_buffer("xyz_scale", torch.tensor(
+            # Normalize by inverse D65 white point. XYZ is non-negative by
+            # construction, so the post-normalization range is [0, ~1] — NOT
+            # [-1, 1]. Explicit scaling only, kept for parity with the LAB path.
+            self.register_buffer("d65_norm", torch.tensor(
                 [1.0 / 0.95047, 1.0 / 1.00000, 1.0 / 1.08883]
             ).view(1, 3, 1, 1))
 
             # ----------------------------------------------------------------
-            # PART 2: Learnable XYZ channel scales (same as lab_scale)
-            # xyz_scale[0] -> how much X matters
-            # xyz_scale[1] -> how much Y (luminance) matters
-            # xyz_scale[2] -> how much Z matters
+            # PART 2: Static learnable per-channel XYZ scale.
+            # Same role as lab_scale: xyz_scale[i] weights channel i (X, Y, Z),
+            # init 1.0, trained once, non-negative in forward().
             # ----------------------------------------------------------------
             self.xyz_scale = nn.Parameter(torch.ones(1, 3, 1, 1))
 
@@ -1279,15 +1289,17 @@ class SpectralFeatureEncoder(nn.Module):
         xyz = self.xyz_conv(x).clamp(min=0.0)
 
         # Step 2: Normalize by D65 white point (same as LAB)
-        xyz = xyz * self.xyz_scale
+        xyz = xyz * self.d65_norm
 
         return xyz
 
     def _rgb_to_lab(self, x):
         """
-        Mathematically correct sRGB -> CIE LAB conversion.
-        Identical pipeline to cv2.COLOR_BGR2Lab on float32 input.
-        No learnable parameters here pure fixed math.
+        sRGB -> CIE L*a*b* conversion, output normalized for training.
+
+        Equivalent to standard CIELAB up to a fixed per-channel normalization
+        (L/100, a,b/128) applied for stability; assumes RGB input in [0,1]
+        (first matrix column weights R).
         """
         # Step 0: Clamp input to valid sRGB range before gamma removal and Remove sRGB gamma safely
         x = x.clamp(0.0, 1.0)
@@ -1297,19 +1309,25 @@ class SpectralFeatureEncoder(nn.Module):
             ((x + 0.055) / 1.055).pow(2.4).clamp(min=0.0)
         )
 
-        # Step 1: Linear RGB -> XYZ
-        xyz = self.xyz_conv(x).clamp(min=1e-8)  # never zero, protects pow(1/3)
+        # Step 1: Linear RGB -> XYZ. Floor to a small positive value so the
+        # later cube root never sees zero/negative (matmul + fp can produce
+        # tiny negatives). Cube root has infinite slope at 0, so a strict
+        # positive floor is required for a finite backward pass.
+        xyz = self.xyz_conv(x).clamp(min=1e-8)
 
-        # Step 2: Normalize by D65
+        # Step 2: Normalize by D65 white point.
         xyz = xyz / self.d65
 
-        # Step 3: Cube root with safe clamping to avoid zero/negative issues
-        # clamp before pow so we never take root of zero or negative
-        safe_xyz = xyz.clamp(min=0.008857)  # just above the threshold
+        # Step 3: CIELAB nonlinearity, piecewise at t0 = (6/29)^3 ≈ 0.008856.
+        # torch.where evaluates BOTH branches before selecting, so pow(1/3)
+        # runs on sub-threshold values too. Clamp the cube-root branch just
+        # above t0 to keep its gradient finite even where the result is
+        # discarded (avoids NaN gradients leaking into backward).
+        safe_xyz = xyz.clamp(min=0.008857)
         xyz = torch.where(
             xyz > 0.008856,
             safe_xyz.pow(1.0 / 3.0),
-            7.787 * xyz + 16.0 / 116.0
+            7.787 * xyz + 16.0 / 116.0,   # linear segment: (1/3)(29/6)^2 t + 4/29
         )
 
         # Step 4: L*, a*, b*
