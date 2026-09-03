@@ -89,7 +89,7 @@ from ultralytics.nn.modules import (
     CCS,
     C3k2Spa,
     C3k2Cha,
-    SpectralFeatureEncoder,
+    ChromaticFeatureEncoder,
     RGBIdentityEncoder,
     SEAtt,
     BiLevelRoutingAttention,
@@ -149,6 +149,7 @@ globals()['MCBAMChannelAttention'] = MCBAMChannelAttention
 globals()['MCBAM'] = MCBAM
 globals()['C2fG'] = C2fG
 globals()['CBAM'] = CBAM
+globals()['ChromaticFeatureEncoder'] = ChromaticFeatureEncoder
 
 
 class BaseModel(torch.nn.Module):
@@ -385,7 +386,7 @@ class BaseModel(torch.nn.Module):
             or the RGB-passthrough ablation control variant, which shares the exact
             same layer placement and index-shift pattern.
             """
-            DAYA_BRANCH_TYPES = ("SpectralFeatureEncoder", "RGBIdentityEncoder")
+            DAYA_BRANCH_TYPES = ("ChromaticFeatureEncoder", "RGBIdentityEncoder")
             if hasattr(self, "model"):
                 for i, layer in enumerate(self.model):
                     if layer.__class__.__name__ in DAYA_BRANCH_TYPES:
@@ -491,7 +492,7 @@ class BaseModel(torch.nn.Module):
                 index_map, wrapper_map = {}, {}
                 si = ti = 0
 
-                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, SpectralFeatureEncoder, RGBIdentityEncoder, BiLevelRoutingAttention)
+                INSERTION_TYPES    = (EMA, LSKA, CoTAttention, ChromaticFeatureEncoder, RGBIdentityEncoder, BiLevelRoutingAttention)
                 REPLACEMENT_TYPES  = (ECA,ConvNeXtBlock)
                 REPLACEMENT_SRCS   = {"C3k2", "C3"}
                 WRAPPER_TGT_NAMES  = {"C3k2Spa", "C3k2Cha", "C3k2BRA"}
@@ -1887,7 +1888,7 @@ def parse_model(d, ch, verbose=True):
             CCS,
             C3k2Spa,
             C3k2Cha,
-            SpectralFeatureEncoder,
+            ChromaticFeatureEncoder,
             RGBIdentityEncoder,
             C3k2BRA,
             ConvNeXtBlock,
@@ -1940,12 +1941,12 @@ def parse_model(d, ch, verbose=True):
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
         if m in base_modules:
             c1, c2 = ch[f], args[0]
-            if c2 != nc and m is not SpectralFeatureEncoder:
+            if c2 != nc and m is not ChromaticFeatureEncoder:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
             if m is C2fAttn:
                 args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
                 args[2] = int(max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2])
-            if m is SpectralFeatureEncoder:
+            if m is ChromaticFeatureEncoder:
                 mode = args[1] if len(args) > 1 else "XYZ"
                 args = [c1, c2, mode]
             else:

@@ -33,7 +33,7 @@ backbone:
   - [-1, 2, C2PSA, [1024]]         # 11: Final Main Backbone Output
 
   # --- AUXILIARY BACKBONE (Chromatic Branch) ---
-  - [0, 1, SpectralFeatureEncoder, [3, "LAB"]] # 12: Encoder (S=1, C=3), Encoder options: "XYZ", "LAB"
+  - [0, 1, ChromaticFeatureEncoder, [3, "LAB"]] # 12: Encoder (S=1, C=3), Encoder options: "XYZ", "LAB"
   - [-1, 1, Conv, [32, 3, 2]]       # 13: Aux P1/2
   - [-1, 1, Conv, [32, 3, 2]]       # 14: Aux P2/4
   - [-1, 1, Conv, [32, 3, 2]]       # 15: Aux P3/8 (Color Clue P3)

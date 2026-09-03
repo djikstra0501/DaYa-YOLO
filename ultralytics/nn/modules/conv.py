@@ -32,7 +32,7 @@ __all__ = (
     "GSConv",
     "GnConv",
     "SpatialAttention2",
-    "SpectralFeatureEncoder",
+    "ChromaticFeatureEncoder",
     "RGBIdentityEncoder",
     "SEAtt",
     "LSKA",
@@ -1161,7 +1161,7 @@ class GnConv(nn.Module):
         
         return x    
 
-class SpectralFeatureEncoder(nn.Module):
+class ChromaticFeatureEncoder(nn.Module):
     """
     Chromatic Feature Encoder (CFE) for Rice Pest Detection (DaYa-YOLO).
 
@@ -1177,8 +1177,8 @@ class SpectralFeatureEncoder(nn.Module):
               (constrained non-negative; see forward()).
 
     YAML usage:
-        - [0, 1, SpectralFeatureEncoder, [3, "LAB"]]
-        - [0, 1, SpectralFeatureEncoder, [3, "XYZ"]]
+        - [0, 1, ChromaticFeatureEncoder, [3, "LAB"]]
+        - [0, 1, ChromaticFeatureEncoder, [3, "XYZ"]]
 
     Note: c2 > 3 leaves the extra encoder output channels zero-initialized
     (dead at start) because the encoder is eye_-initialized on a 3-wide input.
@@ -1189,7 +1189,7 @@ class SpectralFeatureEncoder(nn.Module):
         super().__init__()
         self.mode = mode.upper()
         assert self.mode in ("XYZ", "LAB"), \
-            f"SpectralFeatureEncoder: mode must be 'XYZ' or 'LAB', got '{mode}'"
+            f"ChromaticFeatureEncoder: mode must be 'XYZ' or 'LAB', got '{mode}'"
 
         if self.mode == "LAB":
             # ----------------------------------------------------------------
@@ -1360,7 +1360,7 @@ class RGBIdentityEncoder(nn.Module):
     Purpose:
         Isolates whether performance gains from the auxiliary branch come
         specifically from the physics-based color-space transformation
-        (SpectralFeatureEncoder, XYZ/LAB) or simply from the added
+        (ChromaticFeatureEncoder, XYZ/LAB) or simply from the added
         parameter capacity / second-branch structure itself.
 
         This module performs NO color-space conversion. It is a plain,
@@ -1378,13 +1378,13 @@ class RGBIdentityEncoder(nn.Module):
           the comparison fair: both branches begin training from the same
           starting point, differing only in whether a physics-grounded
           transform is present.
-        - Output shape (c2 channels, stride 1) matches SpectralFeatureEncoder
+        - Output shape (c2 channels, stride 1) matches ChromaticFeatureEncoder
           exactly, so downstream aux-backbone channel counts (32/32/32/64/64)
           require no changes when swapping this in for ablation runs.
 
     YAML usage (drop-in replacement for the CFE ablation row):
         - [0, 1, RGBIdentityEncoder, [3]]
-        (compare to: - [0, 1, SpectralFeatureEncoder, [3, "LAB"]])
+        (compare to: - [0, 1, ChromaticFeatureEncoder, [3, "LAB"]])
     """
 
     def __init__(self, c1=3, c2=3):
