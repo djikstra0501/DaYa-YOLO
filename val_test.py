@@ -1,6 +1,9 @@
+import ultralytics
 from ultralytics import YOLO
-model = YOLO('yolov11-eca-sam-s2.pt')
+from pathlib import Path
 
-data_stage_2 = "ultralytics/data/general/stage_2/data.yaml"
+HOME_DIR = Path.home()
+DATA_DIR = HOME_DIR / "ultralytics" / "data" / "data.yaml"
 
-model.val(data=data_stage_2, split='test', save_json=True, save_txt=True)
+model = YOLO("dy_lab.engine")
+result = model.val(data=DATA_DIR, split="test", conf=0.01, iou=0.25)
