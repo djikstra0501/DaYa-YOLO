@@ -1,0 +1,458 @@
+{
+ "_meta": {
+  "purpose": "Maps every reported number to the checkpoint that produced it.",
+  "protocol": {
+   "split": "test",
+   "imgsz": 640,
+   "batch": 16,
+   "conf": 0.01,
+   "iou": 0.2,
+   "max_det": 300
+  },
+  "seed_field": "read from the checkpoint's own train_args, not from the filename",
+  "legacy": "weights/legacy/ holds an earlier April to August 2026 set of the three DaYa arms. It is kept for completeness and is NOT the source of any number in the paper."
+ },
+ "architectures": {
+  "YOLOv8n": {
+   "config": "yolov8n.yaml",
+   "notes": "Reference, stock YOLOv8n",
+   "tables": [
+    "5"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/yolov8_0.pt",
+     "trained": "2026-05-28",
+     "md5": "4e94984b151255d49f6a7e522d49bc1d"
+    },
+    {
+     "seed": 14,
+     "file": "weights/yolov8_14.pt",
+     "trained": "2026-08-11",
+     "md5": "3505865dc68b7ca4904f3f0f01b12831"
+    },
+    {
+     "seed": 42,
+     "file": "weights/yolov8_42.pt",
+     "trained": "2026-08-18",
+     "md5": "f28f9e8129da9b73b78bb8d35375e49c"
+    },
+    {
+     "seed": 56,
+     "file": "weights/yolov8_56.pt",
+     "trained": "2026-08-11",
+     "md5": "e5b736f78965b46e80eca59907a4c44f"
+    },
+    {
+     "seed": 81,
+     "file": "weights/yolov8_81.pt",
+     "trained": "2026-08-17",
+     "md5": "33131e2c8e267910390e0299e56b6cca"
+    }
+   ]
+  },
+  "YOLOv10n": {
+   "config": "yolov10n.yaml",
+   "notes": "Reference, stock YOLOv10n",
+   "tables": [
+    "5"
+   ],
+   "seeds": 4,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/yolov10_0.pt",
+     "trained": "2026-05-28",
+     "md5": "dffd23c14cd64e8e172eb1733fd13727"
+    },
+    {
+     "seed": 14,
+     "file": "weights/yolov10_14.pt",
+     "trained": "2026-07-13",
+     "md5": "edd9f4dd4f867d82bd9fb53a9d3df104"
+    },
+    {
+     "seed": 42,
+     "file": "weights/yolov10_42.pt",
+     "trained": "2026-08-18",
+     "md5": "d28d1fb98270dc14475c629d1015f6e7"
+    },
+    {
+     "seed": 56,
+     "file": "weights/yolov10_56.pt",
+     "trained": "2026-07-11",
+     "md5": "acd0629c19934c763db832bd025c517c"
+    }
+   ]
+  },
+  "Base (YOLO11)": {
+   "config": "yolo11n.yaml",
+   "notes": "Unmodified baseline",
+   "tables": [
+    "5",
+    "6",
+    "8",
+    "11"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/yolo11n_0.pt",
+     "trained": "2026-04-02",
+     "md5": "d1938068f1f69483a4506eb8567c3d5a"
+    },
+    {
+     "seed": 14,
+     "file": "weights/yolo11n_14.pt",
+     "trained": "2026-04-18",
+     "md5": "70efec81f705b86a1385f02549a22f00"
+    },
+    {
+     "seed": 42,
+     "file": "weights/yolo11n_42.pt",
+     "trained": "2026-08-17",
+     "md5": "63a9b890c8a7a5976f617547b420c896"
+    },
+    {
+     "seed": 56,
+     "file": "weights/yolo11n_56.pt",
+     "trained": "2026-05-03",
+     "md5": "7bb531eb167cb4d99530dd0d4232b717"
+    },
+    {
+     "seed": 81,
+     "file": "weights/yolo11n_81.pt",
+     "trained": "2026-08-17",
+     "md5": "b80f86a4dea993f949230bf7910d307d"
+    }
+   ]
+  },
+  "Base + EMA": {
+   "config": "ultralytics/cfg/models/11/yolov11-EMA-REF.yaml",
+   "notes": "Efficient Multi-Scale Attention at backbone index 5",
+   "tables": [
+    "5",
+    "6",
+    "8"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/ema_0.pt",
+     "trained": "2026-06-17",
+     "md5": "b51dab24689a556c83ddcf857cb7552b"
+    },
+    {
+     "seed": 14,
+     "file": "weights/ema_14.pt",
+     "trained": "2026-08-12",
+     "md5": "ba8fa69055793f3403f59409c15c694b"
+    },
+    {
+     "seed": 42,
+     "file": "weights/ema_42.pt",
+     "trained": "2026-08-17",
+     "md5": "c174e643791966cdf17307304d6c467d"
+    },
+    {
+     "seed": 56,
+     "file": "weights/ema_56.pt",
+     "trained": "2026-08-12",
+     "md5": "a1c39afce25f17fbd55bf7459885f24b"
+    },
+    {
+     "seed": 81,
+     "file": "weights/ema_81.pt",
+     "trained": "2026-08-17",
+     "md5": "26270cdbf3eee3313d452880bdbbbc3c"
+    }
+   ]
+  },
+  "Base + LSKA": {
+   "config": "ultralytics/cfg/models/11/yolov11-LSKA-REF.yaml",
+   "notes": "Large Separable Kernel Attention at backbone index 5, kernel 23",
+   "tables": [
+    "5"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/lska_0.pt",
+     "trained": "2026-06-15",
+     "md5": "18af06d7062a6f71ad14913a9defacab"
+    },
+    {
+     "seed": 14,
+     "file": "weights/lska_14.pt",
+     "trained": "2026-07-06",
+     "md5": "c99ad4154089a980735f3bc10918541b"
+    },
+    {
+     "seed": 42,
+     "file": "weights/lska_42.pt",
+     "trained": "2026-08-17",
+     "md5": "dc3832b151569b12f07ade7b0f728f3a"
+    },
+    {
+     "seed": 56,
+     "file": "weights/lska_56.pt",
+     "trained": "2026-08-18",
+     "md5": "116c77e3a2558754f9c1741d960f2af5"
+    },
+    {
+     "seed": 81,
+     "file": "weights/lska_81.pt",
+     "trained": "2026-08-17",
+     "md5": "b26df74e9fdf6669faccb0077876eb59"
+    }
+   ]
+  },
+  "Base + BRA": {
+   "config": "ultralytics/cfg/models/11/yolov11-BRA-REF.yaml",
+   "notes": "Bi-Level Routing Attention at backbone index 5, 8 heads, 7x7 window, top-k 4, 3 routing levels. This configuration does not shift the neck indices after the insertion, so its detection head reads the three concatenations rather than the C3k2 blocks that follow them. Reported as measured; see the paper.",
+   "tables": [
+    "5"
+   ],
+   "seeds": 4,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/bra_0.pt",
+     "trained": "2026-06-15",
+     "md5": "2c27a2e627553de5c2d7000f7187a153"
+    },
+    {
+     "seed": 14,
+     "file": "weights/bra_14.pt",
+     "trained": "2026-07-05",
+     "md5": "f8e2b7de9d776c5ab49eabf75b6d4ffe"
+    },
+    {
+     "seed": 42,
+     "file": "weights/bra_42.pt",
+     "trained": "2026-08-18",
+     "md5": "63600d74a2ccdb96bbe0b7c057730d4b"
+    },
+    {
+     "seed": 81,
+     "file": "weights/bra_81.pt",
+     "trained": "2026-08-17",
+     "md5": "8017c68c4ffc588a36b39383f4cd608a"
+    }
+   ]
+  },
+  "YOLO-PEST": {
+   "config": "ultralytics/cfg/models/v5/yolov5-PEST.yaml",
+   "notes": "ConvNeXt fusion blocks and CoTAttention before SPPF. The random-crop occlusion augmentation the authors list as their first contribution is not applied, because the augmentation pipeline is part of the shared recipe.",
+   "tables": [
+    "5"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/yolo_pest_0.pt",
+     "trained": "2026-06-18",
+     "md5": "252273d5732c49e88bcdc79c225200a5"
+    },
+    {
+     "seed": 14,
+     "file": "weights/yolo_pest_14.pt",
+     "trained": "2026-07-06",
+     "md5": "8e333767ac6c6d69b39ae148ca5535f1"
+    },
+    {
+     "seed": 42,
+     "file": "weights/yolo_pest_42.pt",
+     "trained": "2026-08-18",
+     "md5": "85fdd4478102d53f6bda608c11dfc99e"
+    },
+    {
+     "seed": 56,
+     "file": "weights/yolo_pest_56.pt",
+     "trained": "2026-08-18",
+     "md5": "543f363bc6e2afd4184bacc7bb692312"
+    },
+    {
+     "seed": 81,
+     "file": "weights/yolo_pest_81.pt",
+     "trained": "2026-08-17",
+     "md5": "a5d0af9acb96b2d894ff5a120d48d83c"
+    }
+   ]
+  },
+  "MTD-YOLO": {
+   "config": "ultralytics/cfg/models/v8/yolov8n-MTD.yaml",
+   "notes": "MobileNetV3 backbone and C2f-T neck. The DyHead detection head, one of the three components the authors credit, is not reproduced.",
+   "tables": [
+    "5"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/mtd_yolo_0.pt",
+     "trained": "2026-06-21",
+     "md5": "9f1cde155a598261b90b9fcfbce54f7e"
+    },
+    {
+     "seed": 14,
+     "file": "weights/mtd_yolo_14.pt",
+     "trained": "2026-07-05",
+     "md5": "004829d00573ec02d6a29b9d6b015a86"
+    },
+    {
+     "seed": 42,
+     "file": "weights/mtd_yolo_42.pt",
+     "trained": "2026-08-18",
+     "md5": "fef734f9a422679f67111239f85e58ea"
+    },
+    {
+     "seed": 56,
+     "file": "weights/mtd_yolo_56.pt",
+     "trained": "2026-08-18",
+     "md5": "0a3ff39600577071032833373281b3ec"
+    },
+    {
+     "seed": 81,
+     "file": "weights/mtd_yolo_81.pt",
+     "trained": "2026-08-17",
+     "md5": "c9bfb9969e1ebfa91c7ae753e06f04d0"
+    }
+   ]
+  },
+  "DaYa-RGB": {
+   "config": "ultralytics/cfg/models/11/yolov11-color.yaml",
+   "notes": "Architecture-matched control: the auxiliary branch with an identity colour pathway, so the branch receives the image unchanged.",
+   "tables": [
+    "5",
+    "8"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/rgb_0.pt",
+     "trained": "2026-09-06",
+     "md5": "d032178fd879896daa5a7ddcad57fbbb"
+    },
+    {
+     "seed": 14,
+     "file": "weights/rgb_14.pt",
+     "trained": "2026-09-06",
+     "md5": "3b61d8d2f7ae8d5a5cbc22b65098766c"
+    },
+    {
+     "seed": 42,
+     "file": "weights/rgb_42.pt",
+     "trained": "2026-09-06",
+     "md5": "e571cb64269302e36a7d739e0694f78c"
+    },
+    {
+     "seed": 56,
+     "file": "weights/rgb_56.pt",
+     "trained": "2026-09-06",
+     "md5": "0cc3e18d59bdb66e06076d77c101e65f"
+    },
+    {
+     "seed": 81,
+     "file": "weights/rgb_81.pt",
+     "trained": "2026-09-06",
+     "md5": "1801826332a1d8bcb906128cdcd8d206"
+    }
+   ]
+  },
+  "DaYa-XYZ": {
+   "config": "ultralytics/cfg/models/11/yolov11-color.yaml",
+   "notes": "Proposed variant, frozen sRGB to CIE XYZ pathway",
+   "tables": [
+    "5",
+    "7",
+    "8",
+    "11"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/xyz_0.pt",
+     "trained": "2026-09-06",
+     "md5": "75a4ed15f2f9ffb5756653d0519a14c0"
+    },
+    {
+     "seed": 14,
+     "file": "weights/xyz_14.pt",
+     "trained": "2026-09-06",
+     "md5": "7ecfceb3903d44d50af79f4d7923daa4"
+    },
+    {
+     "seed": 42,
+     "file": "weights/xyz_42.pt",
+     "trained": "2026-09-06",
+     "md5": "2f8f9ba023a58df1a3fd0e9cb160aa2c"
+    },
+    {
+     "seed": 56,
+     "file": "weights/xyz_56.pt",
+     "trained": "2026-09-06",
+     "md5": "e8ea819451983340a4e14ff374b7c9e8"
+    },
+    {
+     "seed": 81,
+     "file": "weights/xyz_81.pt",
+     "trained": "2026-09-06",
+     "md5": "bd24821858622a432d13d636c07d4681"
+    }
+   ]
+  },
+  "DaYa-LAB": {
+   "config": "ultralytics/cfg/models/11/yolov11-color.yaml",
+   "notes": "Proposed variant, frozen sRGB to XYZ to CIELAB pathway",
+   "tables": [
+    "5",
+    "6",
+    "7",
+    "8",
+    "11"
+   ],
+   "seeds": 5,
+   "checkpoints": [
+    {
+     "seed": 0,
+     "file": "weights/lab_0.pt",
+     "trained": "2026-09-06",
+     "md5": "6841648411245b828715d0af6fb812f2"
+    },
+    {
+     "seed": 14,
+     "file": "weights/lab_14.pt",
+     "trained": "2026-09-06",
+     "md5": "195b1a6cc87d284591c02d2f916f55c4"
+    },
+    {
+     "seed": 42,
+     "file": "weights/lab_42.pt",
+     "trained": "2026-09-06",
+     "md5": "b33d50295d6569d9fd0dcabea54d1e25"
+    },
+    {
+     "seed": 56,
+     "file": "weights/lab_56.pt",
+     "trained": "2026-09-06",
+     "md5": "d02033faf7ca6f0fb7c6f72c84cfcda1"
+    },
+    {
+     "seed": 81,
+     "file": "weights/lab_81.pt",
+     "trained": "2026-09-06",
+     "md5": "7ce5c0fbd0a93e4b6c65b201dbca6468"
+    }
+   ]
+  }
+ }
+}

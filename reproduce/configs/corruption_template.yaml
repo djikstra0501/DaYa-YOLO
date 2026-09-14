@@ -1,0 +1,23 @@
+# Template for one degraded evaluation set built by scripts/make_corruptions.py.
+# The script writes <out>/<condition>/{images,labels}; point `path` at one of
+# those condition directories. Class order must match rice13.yaml exactly.
+
+path: ../corrupt/noise
+train: images
+val: images
+
+nc: 13
+names:
+  0: Bercak-Cokelat-Sempit
+  1: Blast
+  2: Busuk-Bulir
+  3: Busuk-Pelepah
+  4: Gosong-Palsu
+  5: Hawar-Daun
+  6: bercak-Cokelat
+  7: brown plant hopper
+  8: green leaf hopper
+  9: leaf folder
+  10: rice leaf roller
+  11: ricebug
+  12: stem borer
