@@ -1,4 +1,4 @@
-"""Robustness sweep across corruption conditions, seed 0.
+"""Robustness sweep across corruption conditions.
 
 Loads a set of trained YOLO-family checkpoints (baseline, EMA variant, and the
 DaYa dual-branch variants including the RGB-only control) and evaluates each
