@@ -1,198 +1,174 @@
 # DaYa-YOLO
 
-Dual-branch rice pest and disease detection with a physics-grounded chromatic
-branch, optimized for edge deployment on the NVIDIA Jetson Nano.
+Dual-branch rice pest and disease detection with a frozen colorimetric branch,
+built for edge deployment on the NVIDIA Jetson Nano.
 
-This repository accompanies the paper *"[PAPER TITLE]"* ([VENUE], [YEAR]).
+This repository accompanies *DaYa-YOLO: Substituting a Frozen Colorimetric Prior
+for Learned Attention in Edge-Deployed Rice Pest and Disease Detection*,
+submitted to the International Journal of Intelligent Engineering and Systems.
+
+Everything behind the numbers in the paper is in [`reproduce/`](reproduce/):
+per-seed outputs, the scripts that turn them into the printed tables, the split
+manifests, the contamination audit and the device records. Start with
+[`reproduce/README.md`](reproduce/README.md).
 
 ---
 
 ## What this repository is
 
-This is a **fork of [Ultralytics](https://github.com/ultralytics/ultralytics)**
-with a custom dual-branch architecture added. The overwhelming majority of the
-code here is unmodified Ultralytics; our contribution is confined to the files
-listed under [Modified files](#modified-files).
+A fork of [Ultralytics](https://github.com/ultralytics/ultralytics) with a
+dual-branch architecture added. Most of the code here is unmodified Ultralytics.
 
 DaYa-YOLO runs an unmodified YOLO11 RGB backbone in parallel with a **Chromatic
-Feature Encoder (CFE)** — a frozen, colorimetrically exact sRGB → CIE XYZ →
-CIELAB transform with learnable per-channel scaling — and fuses the two branches
-at the P3, P4, and P5 detection scales.
+Feature Encoder**, a fixed sRGB to CIE XYZ to CIELAB transform with a learnable
+per-channel scaling applied downstream of it, and fuses the two branches at the
+P3, P4 and P5 detection scales.
 
-> **Naming note:** the CFE is implemented in code as `SpectralFeatureEncoder`.
-> The paper refers to it as the Chromatic Feature Encoder (CFE). They are the
-> same module.
+What is fixed and what is learned matters for reading the paper. The colour
+conversion itself carries no learned parameters. Twelve learnable values, a
+three-element channel scaling and a three by three projection initialised to the
+identity, sit **after** the conversion, so the invariance the transform provides
+holds at every point in training rather than being fitted.
 
-Two variants are provided, selected by the encoder's mode argument:
+Three arms share that branch and differ only in what the branch receives:
 
-| Variant       | CFE mode | Config |
-|---------------|----------|--------|
-| **DaYa-LAB**  | `"LAB"`  | `ultralytics/cfg/models/11/yolov11-color.yaml` |
-| **DaYa-XYZ**  | `"XYZ"`  | `ultralytics/cfg/models/11/yolov11-color.yaml` |
+| Arm | Branch input | Role |
+| --- | --- | --- |
+| **DaYa-LAB** | sRGB to XYZ to CIELAB | proposed |
+| **DaYa-XYZ** | sRGB to XYZ | proposed |
+| **DaYa-RGB** | the image unchanged | architecture-matched control |
 
----
+The control is what makes the comparison interpretable: it isolates what the
+added branch does from what the colour transform inside it does.
 
-## Modified files
+## What the paper concludes
 
-The following files differ from upstream Ultralytics. Everything else is
-unchanged.
-
-<!-- TODO: confirm these paths against your actual diff before publishing -->
-- `ultralytics/nn/modules/block.py` — `SpectralFeatureEncoder` (CFE) implementation
-- `ultralytics/nn/modules/__init__.py` — module export
-- `ultralytics/nn/tasks.py` — module registration for YAML parsing
-- `ultralytics/cfg/models/11/yolov11-color.yaml` — DaYa-YOLO architecture
-- `tools/` — training, evaluation, and analysis scripts (ours)
-
-To see the exact diff against upstream:
-
-```bash
-git remote add upstream https://github.com/ultralytics/ultralytics.git
-git fetch upstream
-git diff upstream/main --stat
-```
-
----
+Over five shared seeds none of the eleven architectures separates from stock
+YOLO11 on mean accuracy, and the control is indistinguishable from both transform
+arms. The colour pathway is therefore not what the dual-branch design is doing.
+Where the architectures do separate is deployment: eight of ten produced a
+working TensorRT engine on the Jetson Nano and two, one of them an attention
+module, produced none.
 
 ## Installation
 
 ```bash
-git clone https://github.com/[USER]/[REPO].git
-cd [REPO]
+git clone https://github.com/djikstra0501/YOLOv11-ECA-SAM.git
+cd YOLOv11-ECA-SAM
 pip install -e .
 ```
 
-Requires Python ≥ 3.8 and PyTorch ≥ 1.8, as per upstream Ultralytics.
-
----
-
 ## Usage
-
-### Training
 
 ```python
 from ultralytics import YOLO
 
+model = YOLO("weights/lab_0.pt")          # a reported checkpoint
+model.val(data="reproduce/configs/rice13.yaml", split="test",
+          imgsz=640, batch=16, conf=0.01, iou=0.2)
+```
+
+Building a variant from scratch:
+
+```python
 model = YOLO("ultralytics/cfg/models/11/yolov11-color.yaml")
-model.train(data="your_dataset.yaml", epochs=..., imgsz=640, device=[0, 1])
 ```
 
-Set the CFE mode (`"LAB"` or `"XYZ"`) in the YAML at the
-`SpectralFeatureEncoder` layer before training. The mode is fixed at
-construction time, not switchable at inference.
-
-### Validation
+Exporting for the Jetson Nano:
 
 ```python
-model = YOLO("weights/daya_lab_seed0.pt")
-model.val(data="your_dataset.yaml", split="test")
+model.export(format="engine", half=True, imgsz=640)
 ```
 
-### Inference
+## Weights
 
-```python
-results = model.predict("image.jpg", imgsz=640, conf=0.35)
-results[0].show()
+`weights/` holds 53 checkpoints across eleven architectures, named
+`<family>_<seed>.pt`.
+
+**`reproduce/configs/checkpoints.json` is the authoritative map** from every
+reported number to the file that produced it. For each checkpoint it records the
+seed read out of the checkpoint's own training record, the training date and an
+md5.
+
+- The three DaYa arms come from `{rgb,xyz,lab}_{0,14,42,56,81}.pt`, one series
+  trained back to back on 2026-09-06 at the same five seeds.
+- The reference architectures were trained between April and August 2026.
+- `weights/legacy/` holds an earlier set of the three DaYa arms. **No number in
+  the paper comes from it.** It is kept so the two sets can be compared.
+
+## Evaluation protocol
+
+Test split, image size 640, batch 16, confidence threshold 0.01, NMS IoU
+threshold 0.2, at most 300 detections per image. Both thresholds were held
+identical for every architecture and every table reporting accuracy.
+
+## Modified files
+
+Everything not listed here is unmodified Ultralytics.
+
+**Modules** in `ultralytics/nn/modules/conv.py`: `ChromaticFeatureEncoder`,
+`RGBIdentityEncoder`, `LSKA`, `SEAtt`, `SCM`, `CCS`, `GSConv`, `GnConv`.
+Reference modules used by the comparison architectures live alongside them and
+are registered in `ultralytics/nn/tasks.py`.
+
+**Model configurations** in `ultralytics/cfg/models/`:
+
+| Path | Architecture |
+| --- | --- |
+| `11/yolov11-color.yaml` | DaYa-LAB, DaYa-XYZ, DaYa-RGB |
+| `11/yolov11-EMA-REF.yaml` | Base + EMA |
+| `11/yolov11-LSKA-REF.yaml` | Base + LSKA |
+| `11/yolov11-BRA-REF.yaml` | Base + BRA |
+| `v5/yolov5-PEST.yaml` | YOLO-PEST |
+| `v8/yolov8n-MTD.yaml` | MTD-YOLO |
+
+A naming note for anyone loading an older checkpoint: the encoder was once called
+`SpectralFeatureEncoder` and is now `ChromaticFeatureEncoder`. The reproduction
+scripts register the old name as an alias so either loads.
+
+## Repository layout
+
+```
+reproduce/    per-seed results, scripts, configs, device records
+weights/      reported checkpoints, plus legacy/ for the earlier DaYa set
+tools/        development utilities, not needed to reproduce the paper
+assets/       figures and field photographs
+ultralytics/  the vendored framework
 ```
 
-### Edge deployment (Jetson Nano)
-
-```python
-model.export(format="engine", half=True)  # TensorRT FP16
-```
-
-Our Jetson Nano software stack is a non-standard decoupled configuration
-(JetPack 4.6.6 / L4T 32.7.6 with an upgraded Ubuntu 20.04 userspace); see the
-paper's deployment section for the full version matrix.
-
----
-
-## Pretrained weights
-
-Trained weights are published under
-[Releases]([RELEASES_URL]) rather than committed to the repository.
-
-| File | Description |
-|------|-------------|
-| `daya_lab_seed{0,14,56}.pt` | DaYa-LAB, three training seeds |
-| `daya_xyz_seed{0,14,56}.pt` | DaYa-XYZ, three training seeds |
-| `yolo11n_seed{0,14,56}.pt`  | YOLO11n baseline, three training seeds |
-| `ref_*.pt`                  | Reimplemented reference architectures (see below) |
-
----
-
-## Reproducibility notes
-
-**Seeds.** All reported results use seeds 0, 14, and 56. Metrics in the paper
-are the mean and population standard deviation (n = 3) across these seeds.
-
-**Training environment.** All models were trained on dual NVIDIA T4 GPUs
-(Kaggle) under default Ultralytics settings.
-
-**Reference architectures.** The `ref_*` weights are *our reimplementations* of
-published architectures (YOLO-PEST, MTD-YOLO, and the EMA / LSKA / BRA attention
-modules), built from each project's public code and trained here under a
-**standardized configuration** — identical loss function, optimizer, and
-schedule across all models — in order to isolate architectural differences from
-variation in training recipe. Model-specific custom losses described in the
-original papers were deliberately not reproduced. **These are not the original
-authors' released weights and should not be read as a restatement of their
-published results.**
-
-**Not reported in the paper.** This repository also contains exploratory
-configurations (ECA, SE, SAM, SCM, PGI, MCBAM, VoVGSCSP) that were investigated
-during development but are not part of the reported study.
-
----
+`tools/` is kept for provenance. Several of those scripts reference files that
+are not in this repository and are not maintained; the reproduction path is
+`reproduce/`.
 
 ## Dataset
 
-<!-- TODO: fill in or remove depending on what you're permitted to release -->
-The dataset used in this work covers 13 rice pest and disease classes and was
-compiled from field collection and an existing public dataset. See the paper for
-composition and licensing details.
+Thirteen classes of rice pests and diseases, collected across four sessions at a
+single site under uncontrolled outdoor light. `reproduce/configs/rice13.yaml`
+gives the class order, which is the index order the checkpoints were trained
+against; changing it silently invalidates every reported number.
 
----
+`reproduce/data/split_manifest.csv` lists every file in every split with the
+source identity its name encodes and its instance count.
+`reproduce/data/duplicates.json` is the contamination audit described in the
+paper.
 
 ## Citation
 
-If you use this work, please cite:
-
 ```bibtex
-@article{[KEY],
-  title   = {[PAPER TITLE]},
-  author  = {[AUTHORS]},
-  journal = {[JOURNAL]},
-  year    = {[YEAR]},
-  doi     = {[DOI]}
+@article{dananjaya_dayayolo,
+  title  = {DaYa-YOLO: Substituting a Frozen Colorimetric Prior for Learned
+            Attention in Edge-Deployed Rice Pest and Disease Detection},
+  author = {Dananjaya, I Kadek Dipastra Arka and others},
+  note   = {Under review, International Journal of Intelligent Engineering and
+            Systems},
+  year   = {2026}
 }
 ```
-
----
 
 ## License
 
-This project is a derivative work of Ultralytics YOLO and is distributed under
-the **AGPL-3.0 License**, inherited from upstream. See [LICENSE](LICENSE).
-
----
+AGPL-3.0, inherited from Ultralytics. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-This work is built on [Ultralytics YOLO](https://github.com/ultralytics/ultralytics).
-We are grateful to the Ultralytics team for developing and openly releasing the
-framework that made this research possible — the training, validation, export,
-and deployment infrastructure used throughout this project is theirs, and
-DaYa-YOLO would not exist without it.
-
-```bibtex
-@software{ultralytics_yolo,
-  author  = {Jocher, Glenn and Qiu, Jing},
-  title   = {Ultralytics {YOLO11}},
-  year    = {2024},
-  url     = {https://github.com/ultralytics/ultralytics}
-}
-```
-
-We also thank our partner institutions for field data collection and
-agronomic validation.
+Built on [Ultralytics YOLO](https://github.com/ultralytics/ultralytics).
