@@ -59,7 +59,7 @@
    "tables": [
     "5"
    ],
-   "seeds": 4,
+   "seeds": 5,
    "checkpoints": [
     {
      "seed": 0,
@@ -84,6 +84,12 @@
      "file": "weights/yolov10_56.pt",
      "trained": "2026-07-11",
      "md5": "acd0629c19934c763db832bd025c517c"
+    },
+    {
+     "seed": 81,
+     "file": "weights/yolov10_81.pt",
+     "trained": "2026-09-15",
+     "md5": "7d3a24d956cbb41db4f13b3dd858d637"
     }
    ]
   },
@@ -218,7 +224,7 @@
    "tables": [
     "5"
    ],
-   "seeds": 4,
+   "seeds": 5,
    "checkpoints": [
     {
      "seed": 0,
@@ -237,6 +243,12 @@
      "file": "weights/bra_42.pt",
      "trained": "2026-08-18",
      "md5": "63600d74a2ccdb96bbe0b7c057730d4b"
+    },
+    {
+     "seed": 56,
+     "file": "weights/bra_56.pt",
+     "trained": "2026-09-15",
+     "md5": "12d9ed66d317d288682d3764ed975395"
     },
     {
      "seed": 81,

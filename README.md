@@ -82,7 +82,7 @@ model.export(format="engine", half=True, imgsz=640)
 
 ## Weights
 
-`weights/` holds 53 checkpoints across eleven architectures, named
+`weights/` holds 55 checkpoints across eleven architectures, five seeds each, named
 `<family>_<seed>.pt`.
 
 **`reproduce/configs/checkpoints.json` is the authoritative map** from every

@@ -44,6 +44,9 @@ record** rather than inferred from the filename, the training date and an md5.
 
 The short version:
 
+- Every architecture rests on five independent training runs, at the shared
+  seeds 0, 14, 42, 56 and 81. There are 55 checkpoints in total.
+
 - The three DaYa arms, including the architecture-matched control, come from
   `weights/{rgb,xyz,lab}_{0,14,42,56,81}.pt`. These are one series, trained back
   to back on 2026-09-06 at the same five seeds. That is what makes the control a
@@ -90,7 +93,7 @@ own location and take everything machine-specific on the command line.
 
 The recipe is not restated anywhere. `scripts/dump_train_args.py` reads the
 arguments each reported run was launched with out of the checkpoint itself and
-writes them to `configs/train_args/`, one file per run, 53 in total.
+writes them to `configs/train_args/`, one file per run, 55 in total.
 `scripts/train.py` reads one of those files back and relaunches it.
 
 ```bash
