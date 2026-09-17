@@ -7,10 +7,12 @@ This repository accompanies *DaYa-YOLO: Substituting a Frozen Colorimetric Prior
 for Learned Attention in Edge-Deployed Rice Pest and Disease Detection*,
 submitted to the International Journal of Intelligent Engineering and Systems.
 
-Everything behind the numbers in the paper is in [`reproduce/`](reproduce/):
-per-seed outputs, the scripts that turn them into the printed tables, the split
-manifests, the contamination audit and the device records. Start with
-[`reproduce/README.md`](reproduce/README.md).
+Everything behind the numbers in the paper is in seven top-level folders:
+[`configs/`](configs/), [`splits/`](splits/), [`duplicate_audit/`](duplicate_audit/),
+[`per_seed_results/`](per_seed_results/), [`robustness/`](robustness/),
+[`jetson_timing/`](jetson_timing/) and [`scripts/`](scripts/). Start with
+[`REPRODUCE.md`](REPRODUCE.md), which maps every table in the paper to the file
+behind it and the script that produced it.
 
 ---
 
@@ -53,8 +55,8 @@ module, produced none.
 ## Installation
 
 ```bash
-git clone https://github.com/djikstra0501/YOLOv11-ECA-SAM.git
-cd YOLOv11-ECA-SAM
+git clone https://github.com/djikstra0501/DaYa-YOLO.git
+cd DaYa-YOLO
 pip install -e .
 ```
 
@@ -64,7 +66,7 @@ pip install -e .
 from ultralytics import YOLO
 
 model = YOLO("weights/lab_0.pt")          # a reported checkpoint
-model.val(data="reproduce/configs/rice13.yaml", split="test",
+model.val(data="configs/rice13.yaml", split="test",
           imgsz=640, batch=16, conf=0.01, iou=0.2)
 ```
 
@@ -85,7 +87,7 @@ model.export(format="engine", half=True, imgsz=640)
 `weights/` holds 55 checkpoints across eleven architectures, five seeds each, named
 `<family>_<seed>.pt`.
 
-**`reproduce/configs/checkpoints.json` is the authoritative map** from every
+**`configs/checkpoints.json` is the authoritative map** from every
 reported number to the file that produced it. For each checkpoint it records the
 seed read out of the checkpoint's own training record, the training date and an
 md5.
@@ -129,27 +131,33 @@ scripts register the old name as an alias so either loads.
 ## Repository layout
 
 ```
-reproduce/    per-seed results, scripts, configs, device records
-weights/      reported checkpoints, plus legacy/ for the earlier DaYa set
-tools/        development utilities, not needed to reproduce the paper
-assets/       figures and field photographs
-ultralytics/  the vendored framework
+configs/            dataset definition, checkpoint registry, training configurations
+splits/             train, validation and test split manifest
+duplicate_audit/    near-duplicate detection and the deduplicated re-evaluation
+per_seed_results/   every individual run, and the paired statistics
+robustness/         every run under the six degradations
+jetson_timing/      Jetson Nano benchmark records
+scripts/            the code that produces all of the above
+weights/            reported checkpoints, plus legacy/ for the earlier DaYa set
+tools/              development utilities, not needed to reproduce the paper
+assets/             figures and field photographs
+ultralytics/        the vendored framework
 ```
 
 `tools/` is kept for provenance. Several of those scripts reference files that
 are not in this repository and are not maintained; the reproduction path is
-`reproduce/`.
+`REPRODUCE.md` and the seven folders above.
 
 ## Dataset
 
 Thirteen classes of rice pests and diseases, collected across four sessions at a
-single site under uncontrolled outdoor light. `reproduce/configs/rice13.yaml`
+single site under uncontrolled outdoor light. `configs/rice13.yaml`
 gives the class order, which is the index order the checkpoints were trained
 against; changing it silently invalidates every reported number.
 
-`reproduce/data/split_manifest.csv` lists every file in every split with the
+`splits/split_manifest.csv` lists every file in every split with the
 source identity its name encodes and its instance count.
-`reproduce/data/duplicates.json` is the contamination audit described in the
+`duplicate_audit/duplicates.json` is the contamination audit described in the
 paper.
 
 ## Citation

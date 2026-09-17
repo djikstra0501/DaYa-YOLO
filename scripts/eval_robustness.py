@@ -5,9 +5,9 @@ with make_corruptions.py; the clean condition is scored on the re-encoded copy
 that pass writes, so the change column isolates the degradation from the
 re-encoding that accompanies it.
 
-    python reproduce/scripts/make_corruptions.py --src <test split> --out corrupt
-    python reproduce/scripts/eval_robustness.py --corrupt corrupt \
-        --out reproduce/results/per_seed/table08_robustness.json
+    python scripts/make_corruptions.py --src <test split> --out corrupt
+    python scripts/eval_robustness.py --corrupt corrupt \
+        --out robustness/table08_robustness.json
 """
 import argparse
 from pathlib import Path

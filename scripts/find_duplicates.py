@@ -26,7 +26,7 @@ _p = argparse.ArgumentParser(description=__doc__)
 _p.add_argument("--dataset", required=True,
                 help="split root holding train/, valid/ and test/ subdirectories")
 _p.add_argument("--out", default=os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "data", "duplicates.json"))
+    os.path.dirname(os.path.abspath(__file__)), "..", "duplicate_audit", "duplicates.json"))
 _a = _p.parse_args()
 
 DS = _a.dataset

@@ -5,8 +5,8 @@ Reported per metric: the mean paired difference, a t-interval on n-1 degrees of
 freedom, the standardized effect size, the two-sided t p-value, and the exact
 sign-flip permutation p-value over all sign assignments. This produces Table 6.
 
-    python reproduce/scripts/paired_stats.py \
-        --results reproduce/results/per_seed/table05_benchmark.json \
+    python scripts/paired_stats.py \
+        --results per_seed_results/table05_benchmark.json \
         --model "DaYa-LAB" --against "Base (YOLO11)" "Base + EMA" "DaYa-RGB"
 
 Note that with five paired runs there are 32 sign assignments, so the smallest

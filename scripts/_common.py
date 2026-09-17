@@ -10,8 +10,8 @@ import sys
 import warnings
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-REGISTRY = ROOT / "reproduce" / "configs" / "checkpoints.json"
+ROOT = Path(__file__).resolve().parents[1]
+REGISTRY = ROOT / "configs" / "checkpoints.json"
 
 # Evaluation protocol. Every accuracy figure in the paper uses these values.
 PROTOCOL = dict(imgsz=640, batch=16, conf=0.01, iou=0.2, max_det=300)

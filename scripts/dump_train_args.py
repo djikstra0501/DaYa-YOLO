@@ -5,7 +5,7 @@ itself. This reads them back without building the model, so the recipe,
 hyperparameters and random seed of every reported run come from the files rather
 than from a description of them.
 
-    python reproduce/scripts/dump_train_args.py
+    python scripts/dump_train_args.py
 """
 import argparse
 import json
@@ -45,7 +45,7 @@ def slug(label):
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--out", default=str(ROOT / "reproduce" / "configs" / "train_args"))
+    p.add_argument("--out", default=str(ROOT / "configs" / "train_args"))
     return p.parse_args()
 
 

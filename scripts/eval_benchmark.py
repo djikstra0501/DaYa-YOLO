@@ -3,8 +3,8 @@
 This produces the per-seed records behind Tables 5 and 7. Aggregate rows in the
 paper are the mean and sample standard deviation over the seeds reported here.
 
-    python reproduce/scripts/eval_benchmark.py --data reproduce/configs/rice13.yaml \
-        --split test --out reproduce/results/per_seed/table05_benchmark.json
+    python scripts/eval_benchmark.py --data configs/rice13.yaml \
+        --split test --out per_seed_results/table05_benchmark.json
 """
 import argparse
 

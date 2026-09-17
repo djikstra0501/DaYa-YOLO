@@ -22,7 +22,7 @@ from PIL import Image
 import argparse
 
 _here = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(_here, "..", ".."))
+REPO = os.path.abspath(os.path.join(_here, ".."))
 WORK = REPO
 _p = argparse.ArgumentParser(description=__doc__)
 _p.add_argument("--images", required=True, help="directory of test images")

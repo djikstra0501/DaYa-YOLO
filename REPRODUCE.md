@@ -1,8 +1,16 @@
 # Reproduction material
 
-Everything behind the numbers in the paper: the per-seed outputs, the scripts
-that turn them into the printed tables, the split manifests, the duplicate
-detection, and the device records.
+Everything behind the numbers in the paper sits in seven top-level folders.
+
+| Folder | What it holds |
+| --- | --- |
+| [`configs/`](configs/) | dataset definition, checkpoint registry, the recorded training configuration of every reported run |
+| [`splits/`](splits/) | the train, validation and test split manifest with source identity |
+| [`duplicate_audit/`](duplicate_audit/) | the near-duplicate detection output and the re-evaluation with duplicates removed |
+| [`per_seed_results/`](per_seed_results/) | precision, recall, mAP50 and mAP50-95 for every individual run, and the paired statistics |
+| [`robustness/`](robustness/) | every run under the six degradations, and the aggregates |
+| [`jetson_timing/`](jetson_timing/) | the Jetson Nano benchmark records, both sessions |
+| [`scripts/`](scripts/) | the code that produces all of the above |
 
 ## Evaluation protocol
 
@@ -22,15 +30,15 @@ Every accuracy figure in the paper was measured the same way.
 
 | Paper | File | Produced by |
 | --- | --- | --- |
-| Table 5, benchmark | `results/per_seed/table05_benchmark.json` | `scripts/eval_benchmark.py` |
-| Table 6, paired comparison | `results/table06_paired.tex` | `scripts/paired_stats.py` |
-| Table 7, per class | `results/per_seed/table07_per_class.json` | `scripts/eval_benchmark.py --per-class` |
-| Table 8, robustness | `results/per_seed/table08_robustness.json` | `scripts/eval_robustness.py` |
-| Table 8, aggregates | `results/table08_summary.json` | `scripts/summarise.py --robustness` |
-| Tables 9 and 10, device | `results/jetson/` | see that directory's README |
-| Contamination audit | `data/duplicates.json` | `scripts/find_duplicates.py` |
-| Contamination re-evaluation | `results/per_seed/leakage_excluded.json`, `results/leakage_summary.json` | `scripts/eval_benchmark.py` on the filtered split |
-| Split composition | `data/split_manifest.csv` | `scripts/build_manifest.py` |
+| Table 5, benchmark | `per_seed_results/table05_benchmark.json` | `scripts/eval_benchmark.py` |
+| Table 6, paired comparison | `per_seed_results/table06_paired.tex` | `scripts/paired_stats.py` |
+| Table 7, per class | `per_seed_results/table07_per_class.json` | `scripts/eval_benchmark.py --per-class` |
+| Table 8, robustness | `robustness/table08_robustness.json` | `scripts/eval_robustness.py` |
+| Table 8, aggregates | `robustness/table08_summary.json` | `scripts/summarise.py --robustness` |
+| Tables 9 and 10, device | `jetson_timing/` | see that folder's README |
+| Contamination audit | `duplicate_audit/duplicates.json` | `scripts/find_duplicates.py` |
+| Contamination re-evaluation | `duplicate_audit/leakage_excluded.json`, `duplicate_audit/leakage_summary.json` | `scripts/eval_benchmark.py` on the filtered split |
+| Split composition | `splits/split_manifest.csv` | `scripts/build_manifest.py` |
 | Noise amplification, Section 4.4 | printed by `scripts/encoder_noise.py` | |
 
 Every result file carries a `_meta` block naming the protocol, the checkpoints
@@ -42,11 +50,8 @@ the rows were measured from, and the table it backs.
 lists every checkpoint, the seed **read out of the checkpoint's own training
 record** rather than inferred from the filename, the training date and an md5.
 
-The short version:
-
 - Every architecture rests on five independent training runs, at the shared
   seeds 0, 14, 42, 56 and 81. There are 55 checkpoints in total.
-
 - The three DaYa arms, including the architecture-matched control, come from
   `weights/{rgb,xyz,lab}_{0,14,42,56,81}.pt`. These are one series, trained back
   to back on 2026-09-06 at the same five seeds. That is what makes the control a
@@ -58,36 +63,38 @@ The short version:
 
 ## Reproducing from scratch
 
+Run everything from the repository root.
+
 ```bash
 pip install -e .                      # installs the vendored framework
 
 # 1. point the dataset config at your copy of the split
-#    reproduce/configs/rice13.yaml expects <path>/{train,valid,test}/{images,labels}
+#    configs/rice13.yaml expects <path>/{train,valid,test}/{images,labels}
 
 # 2. accuracy, Tables 5 and 7
-python reproduce/scripts/eval_benchmark.py \
-    --data reproduce/configs/rice13.yaml --split test --per-class \
-    --out reproduce/results/per_seed/table05_benchmark.json
+python scripts/eval_benchmark.py \
+    --data configs/rice13.yaml --split test --per-class \
+    --out per_seed_results/table05_benchmark.json
 
 # 3. paired comparison, Table 6
-python reproduce/scripts/paired_stats.py \
-    --results reproduce/results/per_seed/table05_benchmark.json \
+python scripts/paired_stats.py \
+    --results per_seed_results/table05_benchmark.json \
     --model "DaYa-LAB" --against "Base (YOLO11)" "Base + EMA" "DaYa-RGB"
 
 # 4. robustness, Table 8
-python reproduce/scripts/make_corruptions.py --src <test split> --out corrupt
-python reproduce/scripts/eval_robustness.py --corrupt corrupt \
-    --out reproduce/results/per_seed/table08_robustness.json
-python reproduce/scripts/summarise.py \
-    --results reproduce/results/per_seed/table08_robustness.json --robustness
+python scripts/make_corruptions.py --src <test split> --out corrupt
+python scripts/eval_robustness.py --corrupt corrupt \
+    --out robustness/table08_robustness.json
+python scripts/summarise.py \
+    --results robustness/table08_robustness.json --robustness
 
 # 5. contamination audit
-python reproduce/scripts/find_duplicates.py --dataset <split root>
-python reproduce/scripts/build_manifest.py --dataset <split root>
+python scripts/find_duplicates.py --dataset <split root>
+python scripts/build_manifest.py --dataset <split root>
 ```
 
-Run the scripts from the repository root; they resolve the repository from their
-own location and take everything machine-specific on the command line.
+The scripts resolve the repository from their own location and take everything
+machine-specific on the command line.
 
 ## Training
 
@@ -97,9 +104,9 @@ writes them to `configs/train_args/`, one file per run, 55 in total.
 `scripts/train.py` reads one of those files back and relaunches it.
 
 ```bash
-python reproduce/scripts/dump_train_args.py
-python reproduce/scripts/train.py --model "DaYa-LAB" --seed 0 \
-    --data reproduce/configs/rice13.yaml --dry-run
+python scripts/dump_train_args.py
+python scripts/train.py --model "DaYa-LAB" --seed 0 \
+    --data configs/rice13.yaml --dry-run
 ```
 
 Every reported run used two NVIDIA T4 GPUs. On different hardware the effective

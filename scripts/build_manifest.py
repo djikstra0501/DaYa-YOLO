@@ -15,8 +15,8 @@ _here = os.path.dirname(os.path.abspath(__file__))
 _p = argparse.ArgumentParser(description=__doc__)
 _p.add_argument("--dataset", required=True,
                 help="split root holding train/, valid/ and test/ subdirectories")
-_p.add_argument("--duplicates", default=os.path.join(_here, "..", "data", "duplicates.json"))
-_p.add_argument("--out", default=os.path.join(_here, "..", "data", "split_manifest.csv"))
+_p.add_argument("--duplicates", default=os.path.join(_here, "..", "duplicate_audit", "duplicates.json"))
+_p.add_argument("--out", default=os.path.join(_here, "..", "splits", "split_manifest.csv"))
 _a = _p.parse_args()
 
 DS = _a.dataset

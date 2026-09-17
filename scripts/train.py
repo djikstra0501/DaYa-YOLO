@@ -5,9 +5,9 @@ the checkpoints themselves by dump_train_args.py, so what this script launches i
 what the reported run was launched with, minus the paths, which are taken from
 the command line because they belong to the machine that trained it.
 
-    python reproduce/scripts/dump_train_args.py
-    python reproduce/scripts/train.py --model "DaYa-LAB" --seed 0 \
-        --data reproduce/configs/rice13.yaml
+    python scripts/dump_train_args.py
+    python scripts/train.py --model "DaYa-LAB" --seed 0 \
+        --data configs/rice13.yaml
 
 Every reported run used two NVIDIA T4 GPUs. On different hardware the effective
 batch, and therefore the result, will differ even with the seed held fixed.
@@ -42,7 +42,7 @@ def parse_args():
 
 def main():
     a = parse_args()
-    cfg_path = ROOT / "reproduce" / "configs" / "train_args" / (
+    cfg_path = ROOT / "configs" / "train_args" / (
         "%s_seed%d.json" % (slug(a.model), a.seed))
     if not cfg_path.exists():
         raise SystemExit("no recorded configuration at %s; run dump_train_args.py first"

@@ -3,10 +3,10 @@
 Means and sample standard deviations over the seeds present, and, for a
 robustness file, each model's percentage change against its own clean score.
 
-    python reproduce/scripts/summarise.py \
-        --results reproduce/results/per_seed/table05_benchmark.json
-    python reproduce/scripts/summarise.py \
-        --results reproduce/results/per_seed/table08_robustness.json --robustness
+    python scripts/summarise.py \
+        --results per_seed_results/table05_benchmark.json
+    python scripts/summarise.py \
+        --results robustness/table08_robustness.json --robustness
 """
 import argparse
 import json
