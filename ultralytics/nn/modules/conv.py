@@ -1,0 +1,1501 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+"""Convolution modules."""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+__all__ = (
+    "Conv",
+    "Conv2",
+    "LightConv",
+    "DWConv",
+    "DWConvTranspose2d",
+    "ConvTranspose",
+    "Focus",
+    "GhostConv",
+    "ChannelAttention",
+    "SpatialAttention",
+    "CBAM",
+    "Concat",
+    "RepConv",
+    "Index",
+    "ECA",
+    "MCBAMChannelAttention",
+    "MCBAM",
+    "SCM",
+    "CCS",
+    "GSConv",
+    "GnConv",
+    "SpatialAttention2",
+    "ChromaticFeatureEncoder",
+    "RGBIdentityEncoder",
+    "SEAtt",
+    "LSKA",
+)
+
+
+def autopad(k, p=None, d=1):  # kernel, padding, dilation
+    """Pad to 'same' shape outputs."""
+    if d > 1:
+        k = d * (k - 1) + 1 if isinstance(k, int) else [d * (x - 1) + 1 for x in k]  # actual kernel-size
+    if p is None:
+        p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
+    return p
+
+
+class Conv(nn.Module):
+    """
+    Standard convolution module with batch normalization and activation.
+
+    Attributes:
+        conv (nn.Conv2d): Convolutional layer.
+        bn (nn.BatchNorm2d): Batch normalization layer.
+        act (nn.Module): Activation function layer.
+        default_act (nn.Module): Default activation function (SiLU).
+    """
+
+    default_act = nn.SiLU()  # default activation
+
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
+        """
+        Initialize Conv layer with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            p (int, optional): Padding.
+            g (int): Groups.
+            d (int): Dilation.
+            act (bool | nn.Module): Activation function.
+        """
+        super().__init__()
+        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.bn = nn.BatchNorm2d(c2)
+        self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+    def forward(self, x):
+        """
+        Apply convolution, batch normalization and activation to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.bn(self.conv(x)))
+
+    def forward_fuse(self, x):
+        """
+        Apply convolution and activation without batch normalization.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.conv(x))
+
+
+class Conv2(Conv):
+    """
+    Simplified RepConv module with Conv fusing.
+
+    Attributes:
+        conv (nn.Conv2d): Main 3x3 convolutional layer.
+        cv2 (nn.Conv2d): Additional 1x1 convolutional layer.
+        bn (nn.BatchNorm2d): Batch normalization layer.
+        act (nn.Module): Activation function layer.
+    """
+
+    def __init__(self, c1, c2, k=3, s=1, p=None, g=1, d=1, act=True):
+        """
+        Initialize Conv2 layer with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            p (int, optional): Padding.
+            g (int): Groups.
+            d (int): Dilation.
+            act (bool | nn.Module): Activation function.
+        """
+        super().__init__(c1, c2, k, s, p, g=g, d=d, act=act)
+        self.cv2 = nn.Conv2d(c1, c2, 1, s, autopad(1, p, d), groups=g, dilation=d, bias=False)  # add 1x1 conv
+
+    def forward(self, x):
+        """
+        Apply convolution, batch normalization and activation to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.bn(self.conv(x) + self.cv2(x)))
+
+    def forward_fuse(self, x):
+        """
+        Apply fused convolution, batch normalization and activation to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.bn(self.conv(x)))
+
+    def fuse_convs(self):
+        """Fuse parallel convolutions."""
+        w = torch.zeros_like(self.conv.weight.data)
+        i = [x // 2 for x in w.shape[2:]]
+        w[:, :, i[0] : i[0] + 1, i[1] : i[1] + 1] = self.cv2.weight.data.clone()
+        self.conv.weight.data += w
+        self.__delattr__("cv2")
+        self.forward = self.forward_fuse
+
+
+class LightConv(nn.Module):
+    """
+    Light convolution module with 1x1 and depthwise convolutions.
+
+    This implementation is based on the PaddleDetection HGNetV2 backbone.
+
+    Attributes:
+        conv1 (Conv): 1x1 convolution layer.
+        conv2 (DWConv): Depthwise convolution layer.
+    """
+
+    def __init__(self, c1, c2, k=1, act=nn.ReLU()):
+        """
+        Initialize LightConv layer with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size for depthwise convolution.
+            act (nn.Module): Activation function.
+        """
+        super().__init__()
+        self.conv1 = Conv(c1, c2, 1, act=False)
+        self.conv2 = DWConv(c2, c2, k, act=act)
+
+    def forward(self, x):
+        """
+        Apply 2 convolutions to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.conv2(self.conv1(x))
+
+
+class DWConv(Conv):
+    """Depth-wise convolution module."""
+
+    def __init__(self, c1, c2, k=1, s=1, d=1, act=True):
+        """
+        Initialize depth-wise convolution with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            d (int): Dilation.
+            act (bool | nn.Module): Activation function.
+        """
+        super().__init__(c1, c2, k, s, g=math.gcd(c1, c2), d=d, act=act)
+
+
+class DWConvTranspose2d(nn.ConvTranspose2d):
+    """Depth-wise transpose convolution module."""
+
+    def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):
+        """
+        Initialize depth-wise transpose convolution with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            p1 (int): Padding.
+            p2 (int): Output padding.
+        """
+        super().__init__(c1, c2, k, s, p1, p2, groups=math.gcd(c1, c2))
+
+
+class ConvTranspose(nn.Module):
+    """
+    Convolution transpose module with optional batch normalization and activation.
+
+    Attributes:
+        conv_transpose (nn.ConvTranspose2d): Transposed convolution layer.
+        bn (nn.BatchNorm2d | nn.Identity): Batch normalization layer.
+        act (nn.Module): Activation function layer.
+        default_act (nn.Module): Default activation function (SiLU).
+    """
+
+    default_act = nn.SiLU()  # default activation
+
+    def __init__(self, c1, c2, k=2, s=2, p=0, bn=True, act=True):
+        """
+        Initialize ConvTranspose layer with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            p (int): Padding.
+            bn (bool): Use batch normalization.
+            act (bool | nn.Module): Activation function.
+        """
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose2d(c1, c2, k, s, p, bias=not bn)
+        self.bn = nn.BatchNorm2d(c2) if bn else nn.Identity()
+        self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+    def forward(self, x):
+        """
+        Apply transposed convolution, batch normalization and activation to input.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.bn(self.conv_transpose(x)))
+
+    def forward_fuse(self, x):
+        """
+        Apply activation and convolution transpose operation to input.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.conv_transpose(x))
+
+
+class Focus(nn.Module):
+    """
+    Focus module for concentrating feature information.
+
+    Slices input tensor into 4 parts and concatenates them in the channel dimension.
+
+    Attributes:
+        conv (Conv): Convolution layer.
+    """
+
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):
+        """
+        Initialize Focus module with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            p (int, optional): Padding.
+            g (int): Groups.
+            act (bool | nn.Module): Activation function.
+        """
+        super().__init__()
+        self.conv = Conv(c1 * 4, c2, k, s, p, g, act=act)
+        # self.contract = Contract(gain=2)
+
+    def forward(self, x):
+        """
+        Apply Focus operation and convolution to input tensor.
+
+        Input shape is (B, C, W, H) and output shape is (B, 4C, W/2, H/2).
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.conv(torch.cat((x[..., ::2, ::2], x[..., 1::2, ::2], x[..., ::2, 1::2], x[..., 1::2, 1::2]), 1))
+        # return self.conv(self.contract(x))
+
+
+class GhostConv(nn.Module):
+    """
+    Ghost Convolution module.
+
+    Generates more features with fewer parameters by using cheap operations.
+
+    Attributes:
+        cv1 (Conv): Primary convolution.
+        cv2 (Conv): Cheap operation convolution.
+
+    References:
+        https://github.com/huawei-noah/Efficient-AI-Backbones
+    """
+
+    def __init__(self, c1, c2, k=1, s=1, g=1, act=True):
+        """
+        Initialize Ghost Convolution module with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            g (int): Groups.
+            act (bool | nn.Module): Activation function.
+        """
+        super().__init__()
+        c_ = max(1, c2 // 2)  # hidden channels
+        self.cv1 = Conv(c1, c_, k, s, None, g, act=act)
+        self.cv2 = Conv(c_, c_, 5, 1, None, c_, act=act)
+
+    def forward(self, x):
+        """
+        Apply Ghost Convolution to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor with concatenated features.
+        """
+        y = self.cv1(x)
+        return torch.cat((y, self.cv2(y)), 1)
+
+
+class RepConv(nn.Module):
+    """
+    RepConv module with training and deploy modes.
+
+    This module is used in RT-DETR and can fuse convolutions during inference for efficiency.
+
+    Attributes:
+        conv1 (Conv): 3x3 convolution.
+        conv2 (Conv): 1x1 convolution.
+        bn (nn.BatchNorm2d, optional): Batch normalization for identity branch.
+        act (nn.Module): Activation function.
+        default_act (nn.Module): Default activation function (SiLU).
+
+    References:
+        https://github.com/DingXiaoH/RepVGG/blob/main/repvgg.py
+    """
+
+    default_act = nn.SiLU()  # default activation
+
+    def __init__(self, c1, c2, k=3, s=1, p=1, g=1, d=1, act=True, bn=False, deploy=False):
+        """
+        Initialize RepConv module with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            c2 (int): Number of output channels.
+            k (int): Kernel size.
+            s (int): Stride.
+            p (int): Padding.
+            g (int): Groups.
+            d (int): Dilation.
+            act (bool | nn.Module): Activation function.
+            bn (bool): Use batch normalization for identity branch.
+            deploy (bool): Deploy mode for inference.
+        """
+        super().__init__()
+        assert k == 3 and p == 1
+        self.g = g
+        self.c1 = c1
+        self.c2 = c2
+        self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
+
+        self.bn = nn.BatchNorm2d(num_features=c1) if bn and c2 == c1 and s == 1 else None
+        self.conv1 = Conv(c1, c2, k, s, p=p, g=g, act=False)
+        self.conv2 = Conv(c1, c2, 1, s, p=(p - k // 2), g=g, act=False)
+
+    def forward_fuse(self, x):
+        """
+        Forward pass for deploy mode.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        return self.act(self.conv(x))
+
+    def forward(self, x):
+        """
+        Forward pass for training mode.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Output tensor.
+        """
+        id_out = 0 if self.bn is None else self.bn(x)
+        return self.act(self.conv1(x) + self.conv2(x) + id_out)
+
+    def get_equivalent_kernel_bias(self):
+        """
+        Calculate equivalent kernel and bias by fusing convolutions.
+
+        Returns:
+            (torch.Tensor): Equivalent kernel
+            (torch.Tensor): Equivalent bias
+        """
+        kernel3x3, bias3x3 = self._fuse_bn_tensor(self.conv1)
+        kernel1x1, bias1x1 = self._fuse_bn_tensor(self.conv2)
+        kernelid, biasid = self._fuse_bn_tensor(self.bn)
+        return kernel3x3 + self._pad_1x1_to_3x3_tensor(kernel1x1) + kernelid, bias3x3 + bias1x1 + biasid
+
+    @staticmethod
+    def _pad_1x1_to_3x3_tensor(kernel1x1):
+        """
+        Pad a 1x1 kernel to 3x3 size.
+
+        Args:
+            kernel1x1 (torch.Tensor): 1x1 convolution kernel.
+
+        Returns:
+            (torch.Tensor): Padded 3x3 kernel.
+        """
+        if kernel1x1 is None:
+            return 0
+        else:
+            return torch.nn.functional.pad(kernel1x1, [1, 1, 1, 1])
+
+    def _fuse_bn_tensor(self, branch):
+        """
+        Fuse batch normalization with convolution weights.
+
+        Args:
+            branch (Conv | nn.BatchNorm2d | None): Branch to fuse.
+
+        Returns:
+            kernel (torch.Tensor): Fused kernel.
+            bias (torch.Tensor): Fused bias.
+        """
+        if branch is None:
+            return 0, 0
+        if isinstance(branch, Conv):
+            kernel = branch.conv.weight
+            running_mean = branch.bn.running_mean
+            running_var = branch.bn.running_var
+            gamma = branch.bn.weight
+            beta = branch.bn.bias
+            eps = branch.bn.eps
+        elif isinstance(branch, nn.BatchNorm2d):
+            if not hasattr(self, "id_tensor"):
+                input_dim = self.c1 // self.g
+                kernel_value = np.zeros((self.c1, input_dim, 3, 3), dtype=np.float32)
+                for i in range(self.c1):
+                    kernel_value[i, i % input_dim, 1, 1] = 1
+                self.id_tensor = torch.from_numpy(kernel_value).to(branch.weight.device)
+            kernel = self.id_tensor
+            running_mean = branch.running_mean
+            running_var = branch.running_var
+            gamma = branch.weight
+            beta = branch.bias
+            eps = branch.eps
+        std = (running_var + eps).sqrt()
+        t = (gamma / std).reshape(-1, 1, 1, 1)
+        return kernel * t, beta - running_mean * gamma / std
+
+    def fuse_convs(self):
+        """Fuse convolutions for inference by creating a single equivalent convolution."""
+        if hasattr(self, "conv"):
+            return
+        kernel, bias = self.get_equivalent_kernel_bias()
+        self.conv = nn.Conv2d(
+            in_channels=self.conv1.conv.in_channels,
+            out_channels=self.conv1.conv.out_channels,
+            kernel_size=self.conv1.conv.kernel_size,
+            stride=self.conv1.conv.stride,
+            padding=self.conv1.conv.padding,
+            dilation=self.conv1.conv.dilation,
+            groups=self.conv1.conv.groups,
+            bias=True,
+        ).requires_grad_(False)
+        self.conv.weight.data = kernel
+        self.conv.bias.data = bias
+        for para in self.parameters():
+            para.detach_()
+        self.__delattr__("conv1")
+        self.__delattr__("conv2")
+        if hasattr(self, "nm"):
+            self.__delattr__("nm")
+        if hasattr(self, "bn"):
+            self.__delattr__("bn")
+        if hasattr(self, "id_tensor"):
+            self.__delattr__("id_tensor")
+
+
+class ChannelAttention(nn.Module):
+    """
+    Channel-attention module for feature recalibration.
+
+    Applies attention weights to channels based on global average pooling.
+
+    Attributes:
+        pool (nn.AdaptiveAvgPool2d): Global average pooling.
+        fc (nn.Conv2d): Fully connected layer implemented as 1x1 convolution.
+        act (nn.Sigmoid): Sigmoid activation for attention weights.
+
+    References:
+        https://github.com/open-mmlab/mmdetection/tree/v3.0.0rc1/configs/rtmdet
+    """
+
+    def __init__(self, channels: int) -> None:
+        """
+        Initialize Channel-attention module.
+
+        Args:
+            channels (int): Number of input channels.
+        """
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Conv2d(channels, channels, 1, 1, 0, bias=True)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply channel attention to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Channel-attended output tensor.
+        """
+        return x * self.act(self.fc(self.pool(x)))
+
+
+class SpatialAttention(nn.Module):
+    """
+    Spatial-attention module for feature recalibration.
+
+    Applies attention weights to spatial dimensions based on channel statistics.
+
+    Attributes:
+        cv1 (nn.Conv2d): Convolution layer for spatial attention.
+        act (nn.Sigmoid): Sigmoid activation for attention weights.
+    """
+
+    def __init__(self, kernel_size=7):
+        """
+        Initialize Spatial-attention module.
+
+        Args:
+            kernel_size (int): Size of the convolutional kernel (3 or 7).
+        """
+        super().__init__()
+        assert kernel_size in {3, 7}, "kernel size must be 3 or 7"
+        padding = 3 if kernel_size == 7 else 1
+        self.cv1 = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x):
+        """
+        Apply spatial attention to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Spatial-attended output tensor.
+        """
+        return x * self.act(self.cv1(torch.cat([torch.mean(x, 1, keepdim=True), torch.max(x, 1, keepdim=True)[0]], 1)))
+
+
+class CBAM(nn.Module):
+    """
+    Convolutional Block Attention Module.
+
+    Combines channel and spatial attention mechanisms for comprehensive feature refinement.
+
+    Attributes:
+        channel_attention (ChannelAttention): Channel attention module.
+        spatial_attention (SpatialAttention): Spatial attention module.
+    """
+
+    def __init__(self, c1, kernel_size=7):
+        """
+        Initialize CBAM with given parameters.
+
+        Args:
+            c1 (int): Number of input channels.
+            kernel_size (int): Size of the convolutional kernel for spatial attention.
+        """
+        super().__init__()
+        self.channel_attention = ChannelAttention(c1)
+        self.spatial_attention = SpatialAttention2(kernel_size)
+
+    def forward(self, x):
+        """
+        Apply channel and spatial attention sequentially to input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            (torch.Tensor): Attended output tensor.
+        """
+        return self.spatial_attention(self.channel_attention(x))
+
+
+class Concat(nn.Module):
+    """
+    Concatenate a list of tensors along specified dimension.
+
+    Attributes:
+        d (int): Dimension along which to concatenate tensors.
+    """
+
+    def __init__(self, dimension=1):
+        """
+        Initialize Concat module.
+
+        Args:
+            dimension (int): Dimension along which to concatenate tensors.
+        """
+        super().__init__()
+        self.d = dimension
+
+    def forward(self, x: list[torch.Tensor]):
+        """
+        Concatenate input tensors along specified dimension.
+
+        Args:
+            x (list[torch.Tensor]): List of input tensors.
+
+        Returns:
+            (torch.Tensor): Concatenated tensor.
+        """
+        return torch.cat(x, self.d)
+
+
+class Index(nn.Module):
+    """
+    Returns a particular index of the input.
+
+    Attributes:
+        index (int): Index to select from input.
+    """
+
+    def __init__(self, index=0):
+        """
+        Initialize Index module.
+
+        Args:
+            index (int): Index to select from input.
+        """
+        super().__init__()
+        self.index = index
+
+    def forward(self, x: list[torch.Tensor]):
+        """
+        Select and return a particular index from input.
+
+        Args:
+            x (list[torch.Tensor]): List of input tensors.
+
+        Returns:
+            (torch.Tensor): Selected tensor.
+        """
+        return x[self.index]
+
+class ECA(nn.Module):
+    """Efficient Channel Attention (ECA) Block.
+
+    This module implements the ECA mechanism from the paper:
+    "ECA-Net: Efficient Channel Attention for Deep Convolutional Neural Networks"
+    (Wang et al., CVPR 2020).
+
+    The block adaptively determines the size of the 1D convolution kernel
+    based on the number of channels in the input feature map, which models
+    local cross-channel interactions efficiently without dimensionality
+    reduction.
+
+    Args:
+        gamma (int, optional): Hyperparameter for controlling kernel size scaling.
+            Default is 2.
+        b (int, optional): Bias term in the kernel size formula.
+            Default is 1.
+
+    Shape:
+        - Input: Tensor of shape (N, C, H, W)
+        - Output: Tensor of shape (N, C, H, W), same as input
+
+    Example:
+        >>> eca = ECA(gamma=2, b=1)
+        >>> x = torch.randn(8, 64, 32, 32)  # [N, C, H, W]
+        >>> out = eca(x)
+        >>> out.shape
+        torch.Size([8, 64, 32, 32])
+    """
+
+    def __init__(self, gamma=2, b=1):
+        super().__init__()
+        self.gamma = gamma
+        self.b = b
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.sigmoid = nn.Sigmoid()
+
+        self.conv = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for ECA block.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (N, C, H, W).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (N, C, H, W) with
+            channel-wise attention applied.
+        """
+        N, C, _, _ = x.size()
+
+        if self.conv is None:
+            t = int(abs((math.log2(C) + self.b) / self.gamma))
+            k = t if t % 2 else t + 1
+            k = max(k, 3)
+
+            self.conv = nn.Conv1d(1, 1, k, padding=k//2, bias=False).to(x.device)
+
+        y = self.avg_pool(x)
+        y = y.squeeze(-1).transpose(-1, -2).contiguous()  # (N, 1, C)
+        y = self.conv(y)
+        y = y.transpose(-1, -2).unsqueeze(-1).contiguous()  # (N, C, 1, 1)
+        y = self.sigmoid(y)
+
+        return x * y
+
+class MCBAMChannelAttention(nn.Module):
+    """Multi-branch Channel Attention module (M-CBAM).
+
+    Extends CBAM channel attention by adding a third branch formed from the
+    sum of the average-pooled and max-pooled descriptors before applying
+    the shared MLP. The outputs of all three branches are aggregated to
+    generate richer channel attention weights.
+
+    Args:
+        channels (int): Number of input channels.
+        reduction (int, optional): Reduction ratio for the MLP hidden layer.
+            Defaults to 16.
+
+    Attributes:
+        mlp (nn.Sequential): Shared MLP with two 1×1 Conv layers and ReLU.
+        avg_pool (nn.AdaptiveAvgPool2d): Global average pooling.
+        max_pool (nn.AdaptiveMaxPool2d): Global max pooling.
+        sigmoid (nn.Sigmoid): Activation function for attention weights.
+    
+    References: 
+        - "A Lightweight Rice Pest Detection Algorithm Using Improved Attention Mechanism and YOLOv8" 
+            (Yin et al., MDPI 2024) 
+            https://www.mdpi.com/2077-0472/14/7/1052
+    """
+
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        hidden = channels // reduction
+
+        # Shared MLP
+        self.mlp = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(hidden, channels, 1, bias=False),
+        )
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.act = nn.Sigmoid()
+
+    def forward(self, x):
+        """Applies multi-branch channel attention.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape
+                (batch_size, channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor with channel attention applied.
+        """
+        avg_vec = self.avg_pool(x)
+        max_vec = self.max_pool(x)
+        sum_vec = avg_vec + max_vec
+
+        avg_out = self.mlp(avg_vec)
+        max_out = self.mlp(max_vec)
+        sum_out = self.mlp(sum_vec)
+
+        att = avg_out + max_out + sum_out
+        return x * self.act(att)
+
+class SpatialAttention2(nn.Module):
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = torch.mean(x, dim=1, keepdim=True)
+        maxv = torch.max(x, dim=1, keepdim=True)[0]
+
+        att = torch.cat([avg, maxv], dim=1)
+        mask = self.sigmoid(self.conv(att))   # (B,1,H,W)
+
+        return x * mask.expand_as(x)
+
+class MCBAM(nn.Module):
+    """Multi-branch Convolutional Block Attention Module (M-CBAM).
+
+    Extends CBAM by using a multi-branch channel attention mechanism
+    combined with standard CBAM spatial attention.
+
+    Args:
+        channels (int): Number of input channels.
+        reduction (int, optional): Reduction ratio for channel MLP.
+            Defaults to 16.
+        spatial_kernel (int, optional): Kernel size for spatial attention.
+            Defaults to 7.
+
+    Attributes:
+        channel_att (MCBAMChannelAttention): Multi-branch channel attention module.
+        spatial_att (SpatialAttention): Standard spatial attention module.
+    
+    References: 
+        - "A Lightweight Rice Pest Detection Algorithm Using Improved Attention Mechanism and YOLOv8" 
+            (Yin et al., MDPI 2024) 
+            https://www.mdpi.com/2077-0472/14/7/1052
+    """
+
+    def __init__(self, c1, c2=None, reduction=16, spatial_kernel=7):
+        super().__init__()
+        self.channel_att = MCBAMChannelAttention(
+            c1, reduction=reduction)
+        self.spatial_att = SpatialAttention(kernel_size=spatial_kernel)
+
+    def forward(self, x):
+        """Applies M-CBAM sequentially (channel → spatial).
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output after channel + spatial attention.
+        """
+        x = self.channel_att(x)
+        x = self.spatial_att(x)
+        return x
+
+class SCM(nn.Module):
+    """Feature Consistency Modulation (FCM) block.
+
+    Flow:
+        Spatial branch:  S = sigmoid(Conv1x1(DWConv3x3(x))) -> (B, 1, H, W)
+        Channel branch:  C = sigmoid(W2(ReLU(W1(GAP(x))))) -> (B, C, 1, 1)
+        Modulation:      M = (1 + S) * (1 + C)
+        Output:          x' = x * M
+    """
+
+    def __init__(self, c1, reduction=4):
+        """
+        Initialize FCM block.
+
+        Args:
+            c1 (int): Number of input channels.
+            reduction (int, optional): Channel reduction ratio for the MLP. Defaults to 4.
+        """
+        super().__init__()
+        hidden = max(1, c1 // reduction)
+
+        # Spatial branch: depthwise 3x3 -> pointwise 1x1 -> sigmoid
+        self.spatial = nn.Sequential(
+            nn.Conv2d(c1, c1, 3, 1, 1, groups=c1, bias=False),
+            nn.Conv2d(c1, 1, 1, 1, 0, bias=False),
+            nn.Sigmoid(),
+        )
+
+        # Channel branch: GAP -> MLP -> sigmoid
+        self.channel = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, hidden, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(hidden, c1, 1, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        """Apply FCM modulation to input tensor."""
+        s = self.spatial(x)  # (B, 1, H, W)
+        c = self.channel(x)  # (B, C, 1, 1)
+
+        m = (1.0 + s) * (1.0 + c)
+        return x * m
+
+class CCS(nn.Module):
+    """Combined C3k2 and SCM block."""
+    def __init__(self, c1, reduction=4):
+        """
+        Initialize SCM block.
+
+        Args:
+            c1 (int): Number of input channels.
+            reduction (int, optional): Channel reduction ratio for the MLP. Defaults to 4.
+        """
+        super().__init__()
+        hidden = max(1, c1 // reduction)
+
+        # Spatial branch: depthwise 3x3 -> pointwise 1x1 -> sigmoid
+        self.spatial = nn.Sequential(
+            nn.Conv2d(c1, c1, 3, 1, 1, groups=c1, bias=False),
+            nn.Conv2d(c1, 1, 1, 1, 0, bias=False),
+            nn.Sigmoid(),
+        )
+
+        # Channel branch: GAP -> MLP -> sigmoid
+        self.channel = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, hidden, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(hidden, c1, 1, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        """Apply SCM modulation to input tensor."""
+        s = self.spatial(x)  # (B, 1, H, W)
+        c = self.channel(x)  # (B, C, 1, 1)
+
+        m = (1.0 + s) * (1.0 + c)
+        return x * m
+
+class GSConv(nn.Module):
+    """
+    GSConv: Grid Sensitive Convolution
+    
+    Architecture flow:
+    1. Split input into two groups
+    2. Conv on first group → C₂/2 channels
+    3. Identity on second group → C₂/2 channels  
+    4. Concat both groups → C₂ channels
+    5. Channel shuffle for feature mixing
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        k (int): Kernel size. Default: 1
+        s (int): Stride. Default: 1
+        g (int): Groups for convolution. Default: 1
+        act (bool): Apply activation. Default: True
+    
+    References:
+        - "Deep learning-based rice pest detection research"
+            (Xiong et al., PLoS ONE 2024)
+            https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0313387
+        
+        - "A lightweight YOLOv7 insulator defect detection algorithm based on DSC-SE"
+            (Zhang et al., PLoS ONE 2023)
+            https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0289162
+    """
+    
+    def __init__(self, c1, c2, k=3, s=1, g=1, act=True):
+        super().__init__()
+        c_ = c2 // 2
+
+        # If stride=2, we replace pooling with a stride-2 conv
+        self.down = None
+        if s == 2:
+            self.down = Conv(c1, c1, k=3, s=2, p=1, act=act)
+
+        # GSConv inner operations always use stride=1
+        self.cv1 = Conv(c1 // 2, c_, k, 1, g=g, act=act)
+        self.cv2 = Conv(c1 // 2, c_, 1, 1, act=act)
+
+        self.s = s
+
+    def forward(self, x):
+        # Proper YOLO-compatible downsampling
+        if self.s == 2:
+            x = self.down(x)
+
+        # GSConv pathway
+        x1, x2 = x.chunk(2, dim=1)
+        x1 = self.cv1(x1)
+        x2 = self.cv2(x2)
+
+        out = torch.cat([x1, x2], dim=1)
+        return self.channel_shuffle(out, 2)
+
+    @staticmethod
+    def channel_shuffle(x, groups=2):
+        b, c, h, w = x.size()
+        g = groups
+        x = x.reshape(b, g, c // g, h, w)
+        x = x.transpose(1, 2).contiguous()
+        return x.reshape(b, c, h, w)
+
+class GnConv(nn.Module):
+    """
+    Recursive Gated Convolution (GnConv)
+    
+    Performs high-order spatial interactions with gated convolutions and recursive designs.
+    
+    Architecture:
+    1. Project input to 2x channels
+    2. Split into gating (pwa) and feature (abc) parts
+    3. Apply depthwise conv with multi-scale processing
+    4. Progressive pointwise convolutions with gating
+    5. Final projection to output channels
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels (if None, c2 = c1)
+        order (int): Hierarchy order for multi-scale processing. Default: 5
+        kernel (int): Kernel size for depthwise conv. Default: 7
+        s (float): Scaling factor for dwconv output. Default: 1.0
+        act (bool): Add activation (kept for compatibility). Default: False
+    
+    References:
+        - "HorNet: Efficient High-Order Spatial Interactions with Recursive Gated Convolutions"
+            (Rao et al., NeurIPS 2022)
+            https://papers.nips.cc/paper_files/paper/2022/file/436d042b2dd81214d23ae43eb196b146-Paper-Conference.pdf
+    """
+    
+    def __init__(self, c1, c2=None, order=5, kernel=7, s=1.0, act=False):
+        super().__init__()
+        
+        # Output channels default to input channels
+        c2 = c2 or c1
+        
+        self.order = order
+        self.scale = s
+        
+        # Calculate dimension hierarchy (from small to large)
+        # dims[0] is smallest, dims[-1] is largest
+        dim = c1 // self.order
+        self.dims = [dim] * self.order
+        self.dims.reverse()  # Now: [c1/2^(order-1), ..., c1/4, c1/2]
+        
+        # Input projection: c1 → 2*c1
+        # Split into: dims[0] for gating + sum(dims) for features
+        self.proj_in = nn.Conv2d(c1, self.dims[0] + sum(self.dims), 1, bias=False)
+        
+        # Depthwise convolution (integrated, no separate function)
+        self.dwconv = nn.Conv2d(
+            sum(self.dims), 
+            sum(self.dims), 
+            kernel_size=kernel, 
+            padding=(kernel - 1) // 2,
+            bias=True,
+            groups=sum(self.dims)  # Depthwise: each channel conv separately
+        )
+        
+        # Progressive pointwise convolutions
+        # Each pw conv expands from dims[i] → dims[i+1]
+        self.pws = nn.ModuleList([
+            nn.Conv2d(self.dims[i], self.dims[i + 1], 1, bias=False) 
+            for i in range(order - 1)
+        ])
+        
+        # Output projection: dims[-1] → c2
+        self.proj_out = nn.Conv2d(self.dims[-1], c2, 1, bias=False)
+        
+    def forward(self, x):
+        """
+        Forward pass through GnConv
+        
+        Args:
+            x (torch.Tensor): Input tensor [B, C1, H, W]
+            
+        Returns:
+            torch.Tensor: Output tensor [B, C2, H, W]
+        """
+        # Input projection
+        fused_x = self.proj_in(x)
+        
+        # Split into gating path (pwa) and feature path (abc)
+        pwa, abc = torch.split(
+            fused_x, 
+            (self.dims[0], sum(self.dims)), 
+            dim=1
+        )
+        
+        # Depthwise convolution with scaling
+        dw_abc = self.dwconv(abc) * self.scale
+        
+        # Split dwconv output into hierarchy
+        dw_list = torch.split(dw_abc, self.dims, dim=1)
+        
+        # First gating: pwa * dw_list[0]
+        x = pwa * dw_list[0]
+        
+        # Progressive pointwise convolutions with gating
+        for i in range(self.order - 1):
+            x = self.pws[i](x) * dw_list[i + 1]
+        
+        # Final output projection
+        x = self.proj_out(x)
+        
+        return x    
+
+class ChromaticFeatureEncoder(nn.Module):
+    """
+    Chromatic Feature Encoder (CFE) for Rice Pest Detection (DaYa-YOLO).
+
+    Applies a frozen, physically-grounded color-space conversion followed by a
+    static learnable per-channel scale and a learnable 1x1 encoder. The physics
+    stage carries no gradients; only the scale and the encoder are trained.
+
+    Modes:
+        XYZ - Linear sRGB -> CIE XYZ (frozen matrix, D65-referenced).
+        LAB - sRGB -> CIE L*a*b* (frozen, gamma-linearized, D65 white point),
+              output normalized to L/100, a,b/128 for training stability.
+              Three learnable scales act as per-channel importance weights
+              (constrained non-negative; see forward()).
+
+    YAML usage:
+        - [0, 1, ChromaticFeatureEncoder, [3, "LAB"]]
+        - [0, 1, ChromaticFeatureEncoder, [3, "XYZ"]]
+
+    Note: c2 > 3 leaves the extra encoder output channels zero-initialized
+    (dead at start) because the encoder is eye_-initialized on a 3-wide input.
+    Keep c2 = 3 unless you re-init for a wider branch.
+    """
+
+    def __init__(self, c1=3, c2=3, mode="XYZ"):
+        super().__init__()
+        self.mode = mode.upper()
+        assert self.mode in ("XYZ", "LAB"), \
+            f"ChromaticFeatureEncoder: mode must be 'XYZ' or 'LAB', got '{mode}'"
+
+        if self.mode == "LAB":
+            # ----------------------------------------------------------------
+            # PART 1: Fixed RGB -> XYZ conversion (frozen, no gradients)
+            # The network cannot change this — it is physics.
+            # ----------------------------------------------------------------
+            self.xyz_conv = nn.Conv2d(3, 3, kernel_size=1, stride=1, padding=0, bias=False)
+            with torch.no_grad():
+                self.xyz_conv.weight.copy_(torch.tensor([
+                    [0.4124, 0.3576, 0.1805],  # -> X
+                    [0.2126, 0.7152, 0.0722],  # -> Y (Luminance)
+                    [0.0193, 0.1192, 0.9505],  # -> Z
+                ]).view(3, 3, 1, 1))
+            for p in self.xyz_conv.parameters():
+                p.requires_grad = False  # frozen forever
+
+            # D65 standard illuminant white point for normalization
+            self.register_buffer("d65", torch.tensor(
+                [0.95047, 1.00000, 1.08883]
+            ).view(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 2: Static learnable per-channel LAB scale.
+            # One scalar per channel (L*, a*, b*), initialized 1.0 (neutral),
+            # trained once and fixed at inference. Acts as a channel-importance
+            # weight learned by the detection loss:
+            #   lab_scale[0] -> weight on L* (lightness)
+            #   lab_scale[1] -> weight on a* (green<->red)  <- expected dominant for pests
+            #   lab_scale[2] -> weight on b* (blue<->yellow)
+            # Constrained non-negative in forward() as a deliberate modeling
+            # choice (importance weight, not axis flip) — not a physics
+            # requirement. This static scale is the component replaced by a
+            # per-image content-adaptive predictor in the follow-up work.
+            # ----------------------------------------------------------------
+            self.lab_scale = nn.Parameter(torch.ones(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 3: Learnable 1x1 conv encoder
+            # Takes the scaled LAB features and produces output feature channels
+            # for the downstream backbone. Initialized as identity so training
+            # starts from a neutral state.
+            # ----------------------------------------------------------------
+            self.encoder = nn.Conv2d(3, c2, kernel_size=1, stride=1, padding=0, bias=False)
+            nn.init.eye_(self.encoder.weight.view(c2, 3))
+
+        else:  # XYZ with strict frozen conversion, same logic as LAB
+            # ----------------------------------------------------------------
+            # PART 1: Fixed sRGB -> XYZ conversion (frozen, no gradients)
+            # Includes gamma linearization, same as LAB pipeline
+            # but stops before the cube root nonlinearity
+            # ----------------------------------------------------------------
+            self.xyz_conv = nn.Conv2d(3, 3, kernel_size=1, stride=1, padding=0, bias=False)
+            with torch.no_grad():
+                self.xyz_conv.weight.copy_(torch.tensor([
+                    [0.4124, 0.3576, 0.1805],  # X
+                    [0.2126, 0.7152, 0.0722],  # Y (Luminance)
+                    [0.0193, 0.1192, 0.9505],  # Z
+                ]).view(3, 3, 1, 1))
+            for p in self.xyz_conv.parameters():
+                p.requires_grad = False  # frozen forever, same as LAB
+
+            # Normalize by inverse D65 white point. XYZ is non-negative by
+            # construction, so the post-normalization range is [0, ~1] — NOT
+            # [-1, 1]. Explicit scaling only, kept for parity with the LAB path.
+            self.register_buffer("d65_norm", torch.tensor(
+                [1.0 / 0.95047, 1.0 / 1.00000, 1.0 / 1.08883]
+            ).view(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 2: Static learnable per-channel XYZ scale.
+            # Same role as lab_scale: xyz_scale[i] weights channel i (X, Y, Z),
+            # init 1.0, trained once, non-negative in forward().
+            # ----------------------------------------------------------------
+            self.xyz_scale = nn.Parameter(torch.ones(1, 3, 1, 1))
+
+            # ----------------------------------------------------------------
+            # PART 3: Learnable encoder, same as LAB
+            # ----------------------------------------------------------------
+            self.encoder = nn.Conv2d(3, c2, kernel_size=1, stride=1, padding=0, bias=False)
+            nn.init.eye_(self.encoder.weight.view(c2, 3))
+    
+    def _srgb_to_xyz(self, x):
+        """
+        Mathematically correct sRGB -> CIE XYZ conversion.
+        Same gamma linearization as LAB pipeline,
+        stops before cube root nonlinearity.
+        """
+        # Step 0: Clamp and remove sRGB gamma
+        x = x.clamp(0.0, 1.0)
+        x = torch.where(
+            x <= 0.04045,
+            x / 12.92,
+            ((x + 0.055) / 1.055).pow(2.4).clamp(min=0.0)
+        )
+
+        # Step 1: Linear RGB -> XYZ (frozen conv)
+        xyz = self.xyz_conv(x).clamp(min=0.0)
+
+        # Step 2: Normalize by D65 white point (same as LAB)
+        xyz = xyz * self.d65_norm
+
+        return xyz
+
+    def _rgb_to_lab(self, x):
+        """
+        sRGB -> CIE L*a*b* conversion, output normalized for training.
+
+        Equivalent to standard CIELAB up to a fixed per-channel normalization
+        (L/100, a,b/128) applied for stability; assumes RGB input in [0,1]
+        (first matrix column weights R).
+        """
+        # Step 0: Clamp input to valid sRGB range before gamma removal and Remove sRGB gamma safely
+        x = x.clamp(0.0, 1.0)
+        x = torch.where(
+            x <= 0.04045,
+            x / 12.92,
+            ((x + 0.055) / 1.055).pow(2.4).clamp(min=0.0)
+        )
+
+        # Step 1: Linear RGB -> XYZ. Floor to a small positive value so the
+        # later cube root never sees zero/negative (matmul + fp can produce
+        # tiny negatives). Cube root has infinite slope at 0, so a strict
+        # positive floor is required for a finite backward pass.
+        xyz = self.xyz_conv(x).clamp(min=1e-8)
+
+        # Step 2: Normalize by D65 white point.
+        xyz = xyz / self.d65
+
+        # Step 3: CIELAB nonlinearity, piecewise at t0 = (6/29)^3 ≈ 0.008856.
+        # torch.where evaluates BOTH branches before selecting, so pow(1/3)
+        # runs on sub-threshold values too. Clamp the cube-root branch just
+        # above t0 to keep its gradient finite even where the result is
+        # discarded (avoids NaN gradients leaking into backward).
+        safe_xyz = xyz.clamp(min=0.008857)
+        xyz = torch.where(
+            xyz > 0.008856,
+            safe_xyz.pow(1.0 / 3.0),
+            7.787 * xyz + 16.0 / 116.0,   # linear segment: (1/3)(29/6)^2 t + 4/29
+        )
+
+        # Step 4: L*, a*, b*
+        L = (116.0 * xyz[:, 1:2] - 16.0) / 100.0
+        a = (500.0 * (xyz[:, 0:1] - xyz[:, 1:2])) / 128.0
+        b = (200.0 * (xyz[:, 1:2] - xyz[:, 2:3])) / 128.0
+
+        return torch.cat([L, a, b], dim=1)
+
+    def forward(self, x):
+        if self.mode == "LAB":
+            # Fixed math: RGB -> true LAB (no gradients flow here)
+            x = self._rgb_to_lab(x)
+
+            # Learnable sliders: scale each LAB channel is learn by network independently
+            x = x * self.lab_scale.clamp(min=0.01)  # prevent negative scaling
+
+            # Learnable encoder: produce output features from scaled LAB
+            return self.encoder(x)
+
+        else:  # XYZ with same logic as LAB but no cube root nonlinearity
+            x = self._srgb_to_xyz(x)
+            x = x * self.xyz_scale.clamp(min=0.01)
+            return self.encoder(x)
+
+class RGBIdentityEncoder(nn.Module):
+    """
+    Ablation Control Branch for DaYa-YOLO — Plain RGB Passthrough Encoder.
+
+    Purpose:
+        Isolates whether performance gains from the auxiliary branch come
+        specifically from the physics-based color-space transformation
+        (ChromaticFeatureEncoder, XYZ/LAB) or simply from the added
+        parameter capacity / second-branch structure itself.
+
+        This module performs NO color-space conversion. It is a plain,
+        fully learnable 1x1 convolution operating directly on sRGB input,
+        with matching output shape (3 channels, stride 1) to the CFE, so
+        it can be swapped into the exact same auxiliary-branch position
+        in the YAML with no other architectural changes.
+
+    Design rationale:
+        - No frozen/fixed transform of any kind — everything is learnable
+          from the start, unlike CFE's frozen physics + learnable scale.
+        - Identity-initialized (eye_ init), same convention as CFE's final
+          encoder layer, so both branches start from an equivalent "neutral"
+          state (output == input) before training diverges them. This keeps
+          the comparison fair: both branches begin training from the same
+          starting point, differing only in whether a physics-grounded
+          transform is present.
+        - Output shape (c2 channels, stride 1) matches ChromaticFeatureEncoder
+          exactly, so downstream aux-backbone channel counts (32/32/32/64/64)
+          require no changes when swapping this in for ablation runs.
+
+    YAML usage (drop-in replacement for the CFE ablation row):
+        - [0, 1, RGBIdentityEncoder, [3]]
+        (compare to: - [0, 1, ChromaticFeatureEncoder, [3, "LAB"]])
+    """
+
+    def __init__(self, c1=3, c2=3):
+        super().__init__()
+        # Single learnable 1x1 conv, stride 1 — no frozen component at all.
+        # This is intentionally the simplest possible learnable block that
+        # still matches CFE's parameter budget order-of-magnitude, so any
+        # performance difference in the ablation isn't attributable to a
+        # trivial capacity mismatch either.
+        self.encoder = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0, bias=False)
+
+        # Identity initialization — output equals input at the start of
+        # training, mirroring CFE's encoder init philosophy so neither
+        # branch has a "head start" purely from initialization.
+        nn.init.eye_(self.encoder.weight.view(c2, c1))
+
+    def forward(self, x):
+        # No gamma linearization, no color-space transform, no frozen math.
+        # Just a learnable linear projection of raw sRGB input.
+        return self.encoder(x)
+
+class SEAtt(nn.Module):
+    """
+    Squeeze-and-Excitation Attention Block.
+    Learns channel-wise importance weights by squeezing spatial
+    information into channel descriptors then exciting (scaling)
+    channels based on learned importance.
+
+    Args:
+        c1 (int): Input channels.
+        reduction (int): Reduction ratio for bottleneck. Default 16.
+
+    YAML usage:
+        - [-1, 1, SEAttention, []]        # default reduction=16
+        - [-1, 1, SEAttention, [8]]       # reduction=8 (wider bottleneck)
+    """
+    def __init__(self, c1, reduction=16):
+        super().__init__()
+        c_squeezed = max(1, c1 // reduction)
+
+        self.se = nn.Sequential(
+            # Squeeze: global average pool → (B, C, 1, 1)
+            nn.AdaptiveAvgPool2d(1),
+            # Excitation: two FC layers with bottleneck
+            nn.Conv2d(c1, c_squeezed, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c_squeezed, c1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # scale each channel by its learned importance weight
+        return x * self.se(x)
+
+class LSKA(nn.Module):
+    """
+    Large Separable Kernel Attention module.
+
+    Reference: https://github.com/StevenLauHKHK/Large-Separable-Kernel-Attention
+    Decomposes large-kernel depthwise attention into cascaded 1D horizontal/vertical convs.
+    Acts as a spatial attention gate: input * attention_map.
+
+    Args:
+        dim (int): number of input/output channels.
+        k_size (int): effective large kernel size. One of [7, 11, 23, 35, 41, 53].
+    """
+
+    def __init__(self, dim, k_size=23):
+        super().__init__()
+        self.k_size = k_size
+
+        if k_size == 7:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 3), padding=(0, 1), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (3, 1), padding=(1, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 3), padding=(0, 2), groups=dim, dilation=2)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (3, 1), padding=(2, 0), groups=dim, dilation=2)
+        elif k_size == 11:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 3), padding=(0, 1), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (3, 1), padding=(1, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 4), groups=dim, dilation=2)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(4, 0), groups=dim, dilation=2)
+        elif k_size == 23:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 7), padding=(0, 9), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (7, 1), padding=(9, 0), groups=dim, dilation=3)
+        elif k_size == 35:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 11), padding=(0, 15), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (11, 1), padding=(15, 0), groups=dim, dilation=3)
+        elif k_size == 41:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 13), padding=(0, 18), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (13, 1), padding=(18, 0), groups=dim, dilation=3)
+        elif k_size == 53:
+            self.DW_conv_h = nn.Conv2d(dim, dim, (1, 5), padding=(0, 2), groups=dim)
+            self.DW_conv_v = nn.Conv2d(dim, dim, (5, 1), padding=(2, 0), groups=dim)
+            self.DW_D_conv_h = nn.Conv2d(dim, dim, (1, 17), padding=(0, 24), groups=dim, dilation=3)
+            self.DW_D_conv_v = nn.Conv2d(dim, dim, (17, 1), padding=(24, 0), groups=dim, dilation=3)
+        else:
+            raise ValueError(f"k_size must be one of [7, 11, 23, 35, 41, 53], got {k_size}")
+
+        self.conv1 = nn.Conv2d(dim, dim, 1)
+
+    def forward(self, x):
+        u = x.clone()
+        attn = self.DW_conv_h(x)
+        attn = self.DW_conv_v(attn)
+        attn = self.DW_D_conv_h(attn)
+        attn = self.DW_D_conv_v(attn)
+        attn = self.conv1(attn)
+        return u * attn

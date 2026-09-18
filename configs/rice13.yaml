@@ -1,0 +1,32 @@
+# Rice pest and disease dataset, 13 classes.
+#
+# Point `path` at the directory holding the exported split. The layout the
+# evaluation scripts expect is:
+#
+#   <path>/train/images, <path>/train/labels
+#   <path>/valid/images, <path>/valid/labels
+#   <path>/test/images,  <path>/test/labels
+#
+# The class order below is the index order the checkpoints were trained against.
+# Changing it silently invalidates every reported number.
+
+path: ../dataset
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 13
+names:
+  0: Bercak-Cokelat-Sempit
+  1: Blast
+  2: Busuk-Bulir
+  3: Busuk-Pelepah
+  4: Gosong-Palsu
+  5: Hawar-Daun
+  6: bercak-Cokelat
+  7: brown plant hopper
+  8: green leaf hopper
+  9: leaf folder
+  10: rice leaf roller
+  11: ricebug
+  12: stem borer

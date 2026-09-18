@@ -1,0 +1,388 @@
+{
+ "BASE (YOLO11)": {
+  "Old": {
+   "latency": {
+    "mean": 64.86,
+    "std": 3.48,
+    "median": 63.92,
+    "p95": 82.04,
+    "p99": 102.47,
+    "min": 57.08,
+    "max": 154.72,
+    "fps": 15.24
+   },
+   "system": {
+    "gpu_util": 75.5,
+    "gpu_peak": 99.4,
+    "cpu_avg": 20.6,
+    "ram_used": 3445.6,
+    "ram_tot": 3963.8,
+    "temp_mean": 44.3,
+    "temp_peak": 44.6,
+    "gpu_pwr": 3073.0,
+    "tot_pwr": 6153.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 65.27,
+    "std": 3.49,
+    "median": 64.3,
+    "p95": 86.95,
+    "p99": 103.19,
+    "min": 57.32,
+    "max": 145.83,
+    "fps": 15.02
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 24.1,
+    "ram_used": 3495.8,
+    "ram_tot": 3955.8,
+    "temp_mean": 31.6,
+    "temp_peak": 32.0,
+    "gpu_pwr": 2959.0,
+    "tot_pwr": 5843.0
+   }
+  }
+ },
+ "DAYA LAB (Proposed)": {
+  "Old": {
+   "latency": {
+    "mean": 84.66,
+    "std": 2.36,
+    "median": 81.38,
+    "p95": 100.68,
+    "p99": 113.44,
+    "min": 77.49,
+    "max": 143.88,
+    "fps": 11.67
+   },
+   "system": {
+    "gpu_util": 76.4,
+    "gpu_peak": 99.5,
+    "cpu_avg": 18.0,
+    "ram_used": 3463.8,
+    "ram_tot": 3963.8,
+    "temp_mean": 46.8,
+    "temp_peak": 47.2,
+    "gpu_pwr": 3435.0,
+    "tot_pwr": 6434.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 85.19,
+    "std": 3.37,
+    "median": 81.96,
+    "p95": 102.81,
+    "p99": 114.53,
+    "min": 77.51,
+    "max": 141.67,
+    "fps": 11.43
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 20.3,
+    "ram_used": 3593.0,
+    "ram_tot": 3955.8,
+    "temp_mean": 33.2,
+    "temp_peak": 33.7,
+    "gpu_pwr": 3132.0,
+    "tot_pwr": 6034.0
+   }
+  }
+ },
+ "DAYA XYZ (Proposed)": {
+  "Old": {
+   "latency": {
+    "mean": 83.38,
+    "std": 1.68,
+    "median": 81.5,
+    "p95": 94.15,
+    "p99": 112.48,
+    "min": 76.48,
+    "max": 129.73,
+    "fps": 11.85
+   },
+   "system": {
+    "gpu_util": 79.8,
+    "gpu_peak": 99.4,
+    "cpu_avg": 17.6,
+    "ram_used": 3421.9,
+    "ram_tot": 3963.8,
+    "temp_mean": 47.2,
+    "temp_peak": 47.5,
+    "gpu_pwr": 3253.0,
+    "tot_pwr": 6334.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 85.07,
+    "std": 5.01,
+    "median": 82.3,
+    "p95": 104.27,
+    "p99": 149.23,
+    "min": 76.46,
+    "max": 205.59,
+    "fps": 11.63
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 19.1,
+    "ram_used": 3519.1,
+    "ram_tot": 3955.8,
+    "temp_mean": 34.1,
+    "temp_peak": 34.7,
+    "gpu_pwr": 3177.0,
+    "tot_pwr": 6063.0
+   }
+  }
+ },
+ "REF YOLOv8n": {
+  "Old": {
+   "latency": {
+    "mean": 71.72,
+    "std": 21.2,
+    "median": 62.05,
+    "p95": 120.18,
+    "p99": 164.32,
+    "min": 54.27,
+    "max": 271.85,
+    "fps": 14.55
+   },
+   "system": {
+    "gpu_util": 62.3,
+    "gpu_peak": 99.4,
+    "cpu_avg": 23.4,
+    "ram_used": 3489.9,
+    "ram_tot": 3955.8,
+    "temp_mean": 47.2,
+    "temp_peak": 47.5,
+    "gpu_pwr": 2874.0,
+    "tot_pwr": 6191.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 60.14,
+    "std": 1.9,
+    "median": 58.0,
+    "p95": 73.61,
+    "p99": 89.68,
+    "min": 53.64,
+    "max": 109.75,
+    "fps": 16.39
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 19.6,
+    "ram_used": 3200.2,
+    "ram_tot": 3955.8,
+    "temp_mean": 32.8,
+    "temp_peak": 33.1,
+    "gpu_pwr": 3056.0,
+    "tot_pwr": 5914.0
+   }
+  }
+ },
+ "REF YOLOv10n": {},
+ "REF LSKA": {
+  "Old": {
+   "latency": {
+    "mean": 80.19,
+    "std": 3.01,
+    "median": 76.8,
+    "p95": 94.6,
+    "p99": 111.2,
+    "min": 73.2,
+    "max": 169.05,
+    "fps": 12.33
+   },
+   "system": {
+    "gpu_util": 76.9,
+    "gpu_peak": 99.6,
+    "cpu_avg": 17.8,
+    "ram_used": 3449.9,
+    "ram_tot": 3963.8,
+    "temp_mean": 45.1,
+    "temp_peak": 45.5,
+    "gpu_pwr": 3220.0,
+    "tot_pwr": 6277.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 80.45,
+    "std": 3.39,
+    "median": 76.9,
+    "p95": 97.68,
+    "p99": 110.85,
+    "min": 73.17,
+    "max": 156.78,
+    "fps": 12.25
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 19.7,
+    "ram_used": 3489.5,
+    "ram_tot": 3955.8,
+    "temp_mean": 30.4,
+    "temp_peak": 30.8,
+    "gpu_pwr": 3079.0,
+    "tot_pwr": 5899.0
+   }
+  }
+ },
+ "REF EMA": {},
+ "REF BRA": {
+  "Old": {
+   "latency": {
+    "mean": 71.23,
+    "std": 2.42,
+    "median": 67.97,
+    "p95": 88.9,
+    "p99": 113.45,
+    "min": 64.25,
+    "max": 124.04,
+    "fps": 13.86
+   },
+   "system": {
+    "gpu_util": 79.0,
+    "gpu_peak": 99.1,
+    "cpu_avg": 20.0,
+    "ram_used": 3453.2,
+    "ram_tot": 3963.8,
+    "temp_mean": 44.7,
+    "temp_peak": 44.9,
+    "gpu_pwr": 3150.0,
+    "tot_pwr": 6204.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 72.01,
+    "std": 3.46,
+    "median": 68.67,
+    "p95": 90.68,
+    "p99": 121.58,
+    "min": 64.33,
+    "max": 135.13,
+    "fps": 13.66
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 22.5,
+    "ram_used": 3458.5,
+    "ram_tot": 3955.8,
+    "temp_mean": 32.9,
+    "temp_peak": 33.3,
+    "gpu_pwr": 2941.0,
+    "tot_pwr": 5863.0
+   }
+  }
+ },
+ "REF MTD-YOLO": {
+  "Old": {
+   "latency": {
+    "mean": 42.56,
+    "std": 2.73,
+    "median": 40.16,
+    "p95": 60.81,
+    "p99": 70.16,
+    "min": 38.87,
+    "max": 75.57,
+    "fps": 23.07
+   },
+   "system": {
+    "gpu_util": 73.5,
+    "gpu_peak": 97.2,
+    "cpu_avg": 30.9,
+    "ram_used": 3406.3,
+    "ram_tot": 3963.8,
+    "temp_mean": 43.5,
+    "temp_peak": 43.7,
+    "gpu_pwr": 2412.0,
+    "tot_pwr": 5681.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 43.56,
+    "std": 4.99,
+    "median": 40.16,
+    "p95": 61.31,
+    "p99": 95.49,
+    "min": 38.84,
+    "max": 106.96,
+    "fps": 22.62
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 32.0,
+    "ram_used": 3463.5,
+    "ram_tot": 3955.8,
+    "temp_mean": 33.5,
+    "temp_peak": 33.8,
+    "gpu_pwr": 2253.0,
+    "tot_pwr": 5301.0
+   }
+  }
+ },
+ "REF YOLO-PEST": {
+  "Old": {
+   "latency": {
+    "mean": 90.13,
+    "std": 3.26,
+    "median": 87.02,
+    "p95": 103.59,
+    "p99": 108.6,
+    "min": 82.02,
+    "max": 214.09,
+    "fps": 10.97
+   },
+   "system": {
+    "gpu_util": 76.9,
+    "gpu_peak": 99.4,
+    "cpu_avg": 17.8,
+    "ram_used": 3451.7,
+    "ram_tot": 3963.8,
+    "temp_mean": 45.2,
+    "temp_peak": 45.5,
+    "gpu_pwr": 3290.0,
+    "tot_pwr": 6324.0
+   }
+  },
+  "New": {
+   "latency": {
+    "mean": 90.23,
+    "std": 3.2,
+    "median": 87.01,
+    "p95": 104.2,
+    "p99": 119.54,
+    "min": 82.43,
+    "max": 159.54,
+    "fps": 10.84
+   },
+   "system": {
+    "gpu_util": 0.0,
+    "gpu_peak": 0.0,
+    "cpu_avg": 20.5,
+    "ram_used": 3483.1,
+    "ram_tot": 3955.8,
+    "temp_mean": 33.4,
+    "temp_peak": 33.8,
+    "gpu_pwr": 3109.0,
+    "tot_pwr": 5952.0
+   }
+  }
+ }
+}
